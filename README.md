@@ -1,11 +1,25 @@
-# handsfree-desktop-control
-Hands-free desktop control system using head movements and blinks.
+# Hands-Free Desktop Control
 
-Prerequisites: Python 3.10+, pip
+**Graduation Project — Eastern Mediterranean University**  
+· Berkin Kaynar · Cıvan Deniz Doğan · Orçun Altınel  
+Supervisor: Assoc. Prof. Dr. Adnan Acan
 
-Quick Start:
+Hands-Free Desktop Control lets physically disabled users operate a desktop computer **without a mouse or keyboard**.  
+A webcam tracks **head orientation** to move the cursor and detects **eyelid blinks** to perform clicks.  
+The system is implemented in Python, using OpenCV for real-time video, TensorFlow/Keras CNNs for gesture recognition, PyAutoGUI for OS control, a PyQt5 GUI, and SQLite for persistent settings.
+
+## Quick start (development)
+
+```bash
+# 1. clone and create a virtual environment
+git clone https://github.com/<berkinksk>/handsfree-desktop-control.git
+cd handsfree-desktop-control
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 2. install minimal dependencies
 pip install -r requirements.txt
-python src/main.py
 
-Running Tests:
-pytest
+# 3. smoke-test scaffold
+python src/main.py     # opens a stub GUI window
+pytest                 # imports all modules
