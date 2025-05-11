@@ -9,14 +9,24 @@ class HeadEyeDetector:
 """
 import cv2
 import os
+import ctypes
+import ctypes.wintypes
 import numpy as np
 import math
 
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
     def __init__(self):
+        # helper to get Windows short path for Unicode support
+        def _get_short_path(path):
+            if os.name == 'nt':
+                buf = ctypes.create_unicode_buffer(260)
+                ctypes.windll.kernel32.GetShortPathNameW(path, buf, ctypes.sizeof(buf))
+                return buf.value
+            return path
         # load Haar cascade for face detection from models folder
         cascade_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'haarcascade_frontalface_default.xml'))
+        cascade_path = _get_short_path(cascade_path)
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
         if self.face_cascade.empty():
             print(f"Warning: cascade not loaded from {cascade_path}; face detection will be disabled.")
@@ -27,6 +37,7 @@ class HeadEyeDetector:
             self.landmark_model = cv2.face.createFacemarkLBF()
             # point to the project-level models directory
             model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'lbfmodel.yaml'))
+            model_path = _get_short_path(model_path)
             self.landmark_model.loadModel(model_path)
         except Exception as e:
             print(f"Warning: failed to load facemark model: {e}")
@@ -121,8 +132,9 @@ class HeadEyeDetector:
         if self.landmark_model is None or face_box is None:
             return []
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # Facemark expects list of face rectangles
-        ok, landmarks = self.landmark_model.fit(gray, [tuple(face_box)])
+        # Facemark expects face rectangles as a numpy array of shape (N,4)
+        rects = np.array([face_box], dtype=np.int32)
+        ok, landmarks = self.landmark_model.fit(gray, rects)
         if not ok or not landmarks:
             return []
         # landmarks[0] is N x 2 array of points
