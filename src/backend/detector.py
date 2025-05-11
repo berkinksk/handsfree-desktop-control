@@ -9,6 +9,8 @@ class HeadEyeDetector:
 """
 import cv2
 import os
+import numpy as np
+import math
 
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
@@ -31,8 +33,71 @@ class HeadEyeDetector:
             self.landmark_model = None
 
     def detect_head_pose(self, frame):
-        """Return head pose as one of: left, right, up, down, center."""
-        return "center"  # TODO replace with real logic
+        """Estimate head orientation and return one of: left, right, up, down, center."""
+        # detect face and landmarks
+        face = self.detect_face(frame)
+        landmarks = self.detect_landmarks(frame, face)
+        # need at least six points for solvePnP
+        if face is None or not landmarks or len(landmarks) < 55:
+            return "center"
+
+        # Image points from landmarks
+        image_pts = np.array([
+            landmarks[30],  # Nose tip
+            landmarks[8],   # Chin
+            landmarks[36],  # Left eye left corner
+            landmarks[45],  # Right eye right corner
+            landmarks[48],  # Left mouth corner
+            landmarks[54]   # Right mouth corner
+        ], dtype="double")
+        # 3D model points
+        model_pts = np.array([
+            (0.0, 0.0, 0.0),             # Nose tip
+            (0.0, -330.0, -65.0),        # Chin
+            (-225.0, 170.0, -135.0),     # Left eye left corner
+            (225.0, 170.0, -135.0),      # Right eye right corner
+            (-150.0, -150.0, -125.0),    # Left mouth corner
+            (150.0, -150.0, -125.0)      # Right mouth corner
+        ], dtype="double")
+        # Camera parameters
+        h, w = frame.shape[:2]
+        focal_len = w
+        cam_mat = np.array([[focal_len, 0, w/2],
+                            [0, focal_len, h/2],
+                            [0, 0, 1]], dtype="double")
+        dist_coeffs = np.zeros((4,1))
+
+        # Solve PnP
+        success, rvec, tvec = cv2.solvePnP(model_pts, image_pts, cam_mat, dist_coeffs)
+        if not success:
+            return "center"
+        # Rotation matrix
+        rmat, _ = cv2.Rodrigues(rvec)
+        # Euler angles
+        sy = math.sqrt(rmat[0,0]**2 + rmat[1,0]**2)
+        singular = sy < 1e-6
+        if not singular:
+            x = math.atan2(rmat[2,1], rmat[2,2])
+            y = math.atan2(-rmat[2,0], sy)
+            z = math.atan2(rmat[1,0], rmat[0,0])
+        else:
+            x = math.atan2(-rmat[1,2], rmat[1,1])
+            y = math.atan2(-rmat[2,0], sy)
+            z = 0
+        # Convert radians to degrees
+        pitch, yaw, roll = np.degrees([x, y, z])
+
+        # Threshold to determine direction
+        thresh = 15.0
+        if yaw > thresh:
+            return "right"
+        elif yaw < -thresh:
+            return "left"
+        elif pitch > thresh:
+            return "down"
+        elif pitch < -thresh:
+            return "up"
+        return "center"
 
     def detect_blink(self, frame):
         """Return True if placeholder blink detected."""
