@@ -26,7 +26,8 @@ class HeadEyeDetector:
         try:
             # create facemark and load model file
             self.landmark_model = cv2.face.createFacemarkLBF()
-            model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'lbfmodel.yaml')
+            # point to the project-level models directory
+            model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'lbfmodel.yaml'))
             self.landmark_model.loadModel(model_path)
         except Exception as e:
             print(f"Warning: failed to load facemark model: {e}")
