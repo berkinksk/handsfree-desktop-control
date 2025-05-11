@@ -1,5 +1,7 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QSlider, QSpinBox
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+import cv2
+from PyQt5.QtGui import QImage, QPixmap
 import sys
 
 class MainWindow(QMainWindow):
@@ -36,6 +38,21 @@ class MainWindow(QMainWindow):
         self.blink_indicator = QLabel("Blink: N/A")
         layout.addWidget(self.tracking_indicator)
         layout.addWidget(self.blink_indicator)
+
+        # Camera preview setup
+        self.camera_label = QLabel()
+        self.camera_label.setFixedSize(640, 480)
+        layout.addWidget(self.camera_label)
+
+        # Initialize camera capture
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            print("Error: Cannot open webcam for preview")
+
+        # Timer for updating camera frames
+        self.preview_timer = QTimer()
+        self.preview_timer.timeout.connect(self.update_frame)
+        self.preview_timer.start(30)
 
         # Settings controls
         self.sensitivity_label = QLabel("Cursor Sensitivity")
@@ -94,6 +111,26 @@ class MainWindow(QMainWindow):
         print("Blink detected event")
         # Reset after short delay
         QTimer.singleShot(500, lambda: self.blink_indicator.setText("Blink: N/A"))
+
+    def update_frame(self):
+        """Read frame from camera and display it in the GUI."""
+        if self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if not ret:
+                return
+            # Convert frame to RGB and display
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+            qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg)
+            self.camera_label.setPixmap(pixmap)
+
+    def closeEvent(self, event):
+        """Ensure camera resource is released on close."""
+        if hasattr(self, 'cap') and self.cap.isOpened():
+            self.cap.release()
+        event.accept()
 
 def launch_app():
     """Launch the stub GUI application."""
