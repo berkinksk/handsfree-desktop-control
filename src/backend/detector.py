@@ -43,14 +43,41 @@ class HeadEyeDetector:
             print(f"Warning: failed to load facemark model: {e}")
             self.landmark_model = None
 
+        # blink detection parameters
+        self.blink_threshold = 0.2
+        self.blink_consec_frames = 3
+        self.blink_counter = 0
+        # head pose threshold (degrees) for left/right/up/down decisions
+        self.pose_threshold = 15.0
+
     def detect_head_pose(self, frame):
         """Estimate head orientation and return one of: left, right, up, down, center."""
-        # detect face and landmarks
-        face = self.detect_face(frame)
-        landmarks = self.detect_landmarks(frame, face)
+        # downscale frame for robust landmark detection
+        h, w = frame.shape[:2]
+        resize_width = 320
+        scale = resize_width / float(w)
+        h_s = int(h * scale)
+        frame_small = cv2.resize(frame, (resize_width, h_s))
+        # detect face and landmarks on small frame
+        face_small = self.detect_face(frame_small)
+        landmarks_small = self.detect_landmarks(frame_small, face_small)
+        # flatten nested landmarks list if necessary
+        flat_small_landmarks = []
+        if landmarks_small:
+            # if result is nested (one array of points inside a list)
+            if isinstance(landmarks_small[0], (list, tuple)) and isinstance(landmarks_small[0][0], (list, tuple)):
+                flat_small_landmarks = landmarks_small[0]
+            else:
+                flat_small_landmarks = landmarks_small
+        # debug: report small-frame bbox and flattened landmark count
+        print(f"[DEBUG] small detect: face_small={face_small}, landmarks_small_count={len(flat_small_landmarks)}")
         # need at least six points for solvePnP
-        if face is None or not landmarks or len(landmarks) < 55:
+        if face_small is None or len(flat_small_landmarks) < 6:
             return "center"
+        # map landmarks to original resolution
+        landmarks = [(pt[0] / scale, pt[1] / scale) for pt in flat_small_landmarks]
+        # we no longer use full-frame face box here
+        face = None
 
         # Image points from landmarks
         image_pts = np.array([
@@ -84,22 +111,17 @@ class HeadEyeDetector:
             return "center"
         # Rotation matrix
         rmat, _ = cv2.Rodrigues(rvec)
-        # Euler angles
-        sy = math.sqrt(rmat[0,0]**2 + rmat[1,0]**2)
-        singular = sy < 1e-6
-        if not singular:
-            x = math.atan2(rmat[2,1], rmat[2,2])
-            y = math.atan2(-rmat[2,0], sy)
-            z = math.atan2(rmat[1,0], rmat[0,0])
-        else:
-            x = math.atan2(-rmat[1,2], rmat[1,1])
-            y = math.atan2(-rmat[2,0], sy)
-            z = 0
-        # Convert radians to degrees
-        pitch, yaw, roll = np.degrees([x, y, z])
-
+        # Compose projection matrix and decompose to Euler angles
+        proj_mat = np.hstack((rmat, tvec))
+        _, _, _, _, _, _, eulerAngles = cv2.decomposeProjectionMatrix(proj_mat)
+        # extract pitch, yaw, roll (in degrees)
+        pitch = float(eulerAngles[0])
+        yaw = float(eulerAngles[1])
+        roll = float(eulerAngles[2])
+        # debug: print raw Euler angles
+        print(f"[DEBUG] pitch={pitch:.2f}°, yaw={yaw:.2f}°, roll={roll:.2f}°")
         # Threshold to determine direction
-        thresh = 15.0
+        thresh = self.pose_threshold
         if yaw > thresh:
             return "right"
         elif yaw < -thresh:
@@ -111,8 +133,40 @@ class HeadEyeDetector:
         return "center"
 
     def detect_blink(self, frame):
-        """Return True if placeholder blink detected."""
-        return False  # TODO replace with real logic
+        """Detect blinks using Eye Aspect Ratio (EAR) method."""
+        # detect face and landmarks
+        face = self.detect_face(frame)
+        landmarks = self.detect_landmarks(frame, face)
+        if face is None or not landmarks or len(landmarks) < 68:
+            # reset blink counter if no face or insufficient landmarks
+            self.blink_counter = 0
+            return False
+
+        # compute Eye Aspect Ratio (EAR)
+        def compute_ear(eye):
+            p1, p2, p3, p4, p5, p6 = eye
+            vert1 = np.linalg.norm(np.array(p2) - np.array(p6))
+            vert2 = np.linalg.norm(np.array(p3) - np.array(p5))
+            horiz = np.linalg.norm(np.array(p1) - np.array(p4))
+            return (vert1 + vert2) / (2.0 * horiz) if horiz > 0 else 0.0
+
+        # extract eye landmarks
+        left_eye = [landmarks[i] for i in range(36, 42)]
+        right_eye = [landmarks[i] for i in range(42, 48)]
+        left_ear = compute_ear(left_eye)
+        right_ear = compute_ear(right_eye)
+        ear_avg = (left_ear + right_ear) / 2.0
+
+        blink_detected = False
+        # update counter based on EAR threshold
+        if ear_avg < self.blink_threshold:
+            self.blink_counter += 1
+        else:
+            if self.blink_counter >= self.blink_consec_frames:
+                blink_detected = True
+            # reset counter after eye opens
+            self.blink_counter = 0
+        return blink_detected
 
     def detect_face(self, frame):
         """Detect a face in the frame and return its bounding box (x, y, w, h) or None."""
@@ -137,8 +191,13 @@ class HeadEyeDetector:
         ok, landmarks = self.landmark_model.fit(gray, rects)
         if not ok or not landmarks:
             return []
-        # landmarks[0] is N x 2 array of points
-        return landmarks[0].tolist()
+        # landmarks[0] may be shape (1,N,2) or (N,2)
+        pts = landmarks[0]
+        # if there's an extra first dimension, remove it
+        if isinstance(pts, np.ndarray) and pts.ndim == 3 and pts.shape[0] == 1:
+            pts = pts[0]
+        # now pts is expected to be (N,2)
+        return pts.tolist()
 
     def test_camera(self):
         """Test camera setup by capturing one frame and logging its dimensions."""
@@ -152,4 +211,13 @@ class HeadEyeDetector:
             print("Error: Cannot read frame from webcam")
             return False
         print(f"Captured frame size: {frame.shape[1]}x{frame.shape[0]}")
-        return True 
+        return True
+
+    def process_frame(self, frame):
+        """Process a frame and return head orientation and blink status."""
+        # get head orientation label
+        pose = self.detect_head_pose(frame)
+        # get blink detection status
+        blink = self.detect_blink(frame)
+        # return structured result
+        return {'pose': pose, 'blink': blink} 
