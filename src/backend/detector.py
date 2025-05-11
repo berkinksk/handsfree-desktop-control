@@ -15,12 +15,11 @@ import math
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
     def __init__(self):
-        # load Haar cascade for face detection
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
+        # load Haar cascade for face detection from models folder
+        cascade_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'haarcascade_frontalface_default.xml'))
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
         if self.face_cascade.empty():
-            print("Warning: Haar cascade not loaded; face detection will be disabled.")
+            print(f"Warning: cascade not loaded from {cascade_path}; face detection will be disabled.")
         # load LBF facemark model for landmarks
         self.landmark_model = None
         try:
