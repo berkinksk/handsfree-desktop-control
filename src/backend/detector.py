@@ -13,6 +13,7 @@ import ctypes
 import ctypes.wintypes
 import numpy as np
 import math
+import cv2.data as _cv2_data
 
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
@@ -28,6 +29,9 @@ class HeadEyeDetector:
         cascade_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'haarcascade_frontalface_default.xml'))
         cascade_path = _get_short_path(cascade_path)
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        # load profile face cascade for side poses
+        profile_path = os.path.join(_cv2_data.haarcascades, 'haarcascade_profileface.xml')
+        self.profile_cascade = cv2.CascadeClassifier(profile_path)
         if self.face_cascade.empty():
             print(f"Warning: cascade not loaded from {cascade_path}; face detection will be disabled.")
         # load LBF facemark model for landmarks
@@ -49,6 +53,29 @@ class HeadEyeDetector:
         self.blink_counter = 0
         # head pose threshold (degrees) for left/right/up/down decisions
         self.pose_threshold = 15.0
+        # direction-specific thresholds (degrees)
+        self.pose_thresholds = {
+            "left": 15.0,
+            "right": 15.0, 
+            "up": 15.0,
+            "down": 10.0  # even lower threshold for downward movement (most challenging to detect)
+        }
+        # head pose smoothing parameters
+        self.last_pose = "center"
+        self.pose_consec_frames = 2  # reduced to make more responsive
+        self.pose_counter = 0
+        # store last raw angles for visualization
+        self.last_raw_pitch = 0.0
+        self.last_raw_yaw = 0.0
+
+        # adaptive thresholds - these will adjust to user's range of motion
+        self.adaptive_thresholds = True  # enable adaptive thresholds by default
+        self.pitch_max = 0.0  # will track the max positive pitch
+        self.pitch_min = 0.0  # will track the min negative pitch
+        self.yaw_max = 0.0    # will track max absolute yaw (either direction)
+        self.angle_history = []  # stores recent angle measurements
+        self.history_size = 20   # number of frames to keep in history
+        self.initial_frames = 0  # count frames for calibration
 
     def detect_head_pose(self, frame):
         """Estimate head orientation and return one of: left, right, up, down, center."""
@@ -60,6 +87,14 @@ class HeadEyeDetector:
         frame_small = cv2.resize(frame, (resize_width, h_s))
         # detect face and landmarks on small frame
         face_small = self.detect_face(frame_small)
+        # if small-frame face detection fails, fallback to full-frame detection
+        if face_small is None:
+            face_full = self.detect_face(frame)
+            if face_full is not None:
+                fx, fy, fw, fh = face_full
+                # map full-frame box to small-frame coordinates
+                face_small = (int(fx * scale), int(fy * scale), int(fw * scale), int(fh * scale))
+                print(f"[DEBUG] fallback face: full={face_full} -> small={face_small}")
         landmarks_small = self.detect_landmarks(frame_small, face_small)
         # flatten nested landmarks list if necessary
         flat_small_landmarks = []
@@ -116,21 +151,94 @@ class HeadEyeDetector:
         _, _, _, _, _, _, eulerAngles = cv2.decomposeProjectionMatrix(proj_mat)
         # extract pitch, yaw, roll (in degrees)
         pitch = float(eulerAngles[0])
-        yaw = float(eulerAngles[1])
-        roll = float(eulerAngles[2])
-        # debug: print raw Euler angles
-        print(f"[DEBUG] pitch={pitch:.2f}°, yaw={yaw:.2f}°, roll={roll:.2f}°")
-        # Threshold to determine direction
-        thresh = self.pose_threshold
-        if yaw > thresh:
-            return "right"
-        elif yaw < -thresh:
-            return "left"
-        elif pitch > thresh:
-            return "down"
-        elif pitch < -thresh:
-            return "up"
-        return "center"
+        yaw   = float(eulerAngles[1])
+        roll  = float(eulerAngles[2])
+        # normalize angles to [-90, 90] for interpretation
+        if pitch > 90:
+            pitch -= 180
+        elif pitch < -90:
+            pitch += 180
+        if yaw > 90:
+            yaw -= 180
+        elif yaw < -90:
+            yaw += 180
+        # print normalized values
+        print(f"[DEBUG] norm_pitch={pitch:.2f}°, norm_yaw={yaw:.2f}°, norm_roll={roll:.2f}°")
+        
+        # store last raw angles for visualization
+        self.last_raw_pitch = pitch
+        self.last_raw_yaw = yaw
+        
+        # update angle history for adaptive thresholds
+        self.angle_history.append((pitch, yaw))
+        if len(self.angle_history) > self.history_size:
+            self.angle_history.pop(0)
+            
+        # update max/min values for adaptive thresholds
+        if self.adaptive_thresholds and len(self.angle_history) > 10:
+            # update pitch max/min (excluding outliers)
+            sorted_pitch = sorted([p for p, _ in self.angle_history])
+            if sorted_pitch[-3] > self.pitch_max:  # use 3rd highest to avoid outliers
+                self.pitch_max = sorted_pitch[-3]
+            if sorted_pitch[2] < self.pitch_min:  # use 3rd lowest to avoid outliers
+                self.pitch_min = sorted_pitch[2]
+                
+            # update max absolute yaw (excluding outliers)
+            abs_yaws = sorted([abs(y) for _, y in self.angle_history])
+            if abs_yaws[-3] > self.yaw_max:  # use 3rd highest to avoid outliers
+                self.yaw_max = abs_yaws[-3]
+        
+        # first 30 frames used for calibration - just return center
+        if self.initial_frames < 30:
+            self.initial_frames += 1
+            new_pose = "center"
+        # after calibration, use either fixed or adaptive thresholds
+        else:
+            # use adaptive thresholds if enabled and enough history is available
+            if self.adaptive_thresholds and len(self.angle_history) > 15:
+                # Use a percentage of the observed range for thresholds
+                right_thresh = max(12.0, 0.7 * self.yaw_max)
+                left_thresh = max(12.0, 0.7 * self.yaw_max)
+                down_thresh = max(8.0, 0.6 * self.pitch_max)
+                up_thresh = max(12.0, 0.6 * abs(self.pitch_min))
+                
+                # Log the current adaptive thresholds occasionally (every 30 frames)
+                if (self.initial_frames % 30) == 0:
+                    print(f"[ADAPTIVE] Thresholds: R={right_thresh:.1f}° L={left_thresh:.1f}° D={down_thresh:.1f}° U={up_thresh:.1f}°")
+                    print(f"[ADAPTIVE] Range: yaw_max={self.yaw_max:.1f}° pitch_max={self.pitch_max:.1f}° pitch_min={self.pitch_min:.1f}°")
+            else:
+                # Use fixed thresholds
+                right_thresh = self.pose_thresholds["right"]
+                left_thresh = self.pose_thresholds["left"]
+                down_thresh = self.pose_thresholds["down"] 
+                up_thresh = self.pose_thresholds["up"]
+                
+            # Classify pose based on current pitch/yaw and thresholds
+            if yaw > right_thresh:
+                new_pose = "right"
+            elif yaw < -left_thresh:
+                new_pose = "left"
+            elif pitch > down_thresh:  # looking down (positive pitch)
+                new_pose = "down"
+            elif pitch < -up_thresh:  # looking up (negative pitch)
+                new_pose = "up"
+            else:
+                new_pose = "center"
+        
+        # Apply smoothing for stable output
+        if new_pose == self.last_pose:
+            self.pose_counter += 1
+        else:
+            self.pose_counter = 0
+            
+        # Return smoothed pose, only change after consecutive detections
+        if self.pose_counter >= self.pose_consec_frames:
+            self.last_pose = new_pose
+        # Special case for center pose - don't require as many frames to go back to center
+        elif new_pose == "center" and self.pose_counter >= 1:
+            self.last_pose = new_pose
+            
+        return self.last_pose
 
     def detect_blink(self, frame):
         """Detect blinks using Eye Aspect Ratio (EAR) method."""
@@ -175,10 +283,22 @@ class HeadEyeDetector:
             return None
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-        if len(faces) == 0:
-            return None
-        # return the first detected face
-        return faces[0]
+        if len(faces) > 0:
+            return faces[0]
+        # fallback to profile cascade (frontal side view)
+        if not self.profile_cascade.empty():
+            faces = self.profile_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+            if len(faces) > 0:
+                return faces[0]
+            # try flipped image for opposite profile
+            gray_flipped = cv2.flip(gray, 1)
+            faces = self.profile_cascade.detectMultiScale(gray_flipped, scaleFactor=1.1, minNeighbors=5)
+            if len(faces) > 0:
+                x, y, w, h = faces[0]
+                # map x from flipped to original coordinates
+                x = frame.shape[1] - x - w
+                return (x, y, w, h)
+        return None
 
     def detect_landmarks(self, frame, face_box):
         """Detect facial landmarks using pretrained LBF model; returns list of (x,y) or empty."""
