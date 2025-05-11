@@ -39,6 +39,11 @@ class HeadEyeDetector:
         # return the first detected face
         return faces[0]
 
+    def detect_landmarks(self, frame, face_box):
+        """Stub for facial landmark detection; returns empty list for now."""
+        # face_box is (x, y, w, h) tuple; real implementation pending
+        return []
+
     def test_camera(self):
         """Test camera setup by capturing one frame and logging its dimensions."""
         cap = cv2.VideoCapture(0)
