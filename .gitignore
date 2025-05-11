@@ -177,3 +177,6 @@ cython_debug/
 *.h5
 *.pth
 *.sqlite3
+
+# Ignore improvement plan tracker
+src/backend/Improvement_Plan_Tracker.txt
