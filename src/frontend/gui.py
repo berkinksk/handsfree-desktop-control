@@ -25,6 +25,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_stop)
         layout.addWidget(self.btn_calibrate)
 
+        # Connect the Calibrate button to the stub calibration slot
+        self.btn_calibrate.clicked.connect(self.on_calibrate)
+
         # Status indicators placeholders
         self.tracking_indicator = QLabel("Tracking: Off")
         self.blink_indicator = QLabel("Blink: N/A")
@@ -47,6 +50,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.blink_threshold_spinbox)
 
         self.setCentralWidget(central)
+
+    def on_calibrate(self):
+        """Stub slot for calibration button click."""
+        # Update status label and print to console as a stub action
+        self.status_label.setText("Status: Calibrating...")
+        print("Calibration requested")
 
 def launch_app():
     """Launch the stub GUI application."""
