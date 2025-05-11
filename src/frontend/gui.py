@@ -49,6 +49,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.blink_threshold_label)
         layout.addWidget(self.blink_threshold_spinbox)
 
+        # Connect settings controls to stub handlers
+        self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
+        self.blink_threshold_spinbox.valueChanged.connect(self.on_blink_threshold_changed)
+
         self.setCentralWidget(central)
 
     def on_calibrate(self):
@@ -56,6 +60,16 @@ class MainWindow(QMainWindow):
         # Update status label and print to console as a stub action
         self.status_label.setText("Status: Calibrating...")
         print("Calibration requested")
+
+    def on_sensitivity_changed(self, value):
+        """Stub handler for sensitivity slider value change."""
+        print(f"Sensitivity changed to {value}")
+        self.sensitivity_label.setText(f"Cursor Sensitivity: {value}")
+
+    def on_blink_threshold_changed(self, value):
+        """Stub handler for blink threshold spinbox value change."""
+        print(f"Blink threshold changed to {value}")
+        self.blink_threshold_label.setText(f"Blink Detection Threshold: {value}")
 
 def launch_app():
     """Launch the stub GUI application."""
