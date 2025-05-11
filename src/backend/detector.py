@@ -7,6 +7,8 @@ class HeadEyeDetector:
     detect_blink(frame) -> bool
         True if (placeholder) blink detected
 """
+import cv2
+
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
     def __init__(self):
@@ -18,4 +20,18 @@ class HeadEyeDetector:
 
     def detect_blink(self, frame):
         """Return True if placeholder blink detected."""
-        return False  # TODO replace with real logic 
+        return False  # TODO replace with real logic
+
+    def test_camera(self):
+        """Test camera setup by capturing one frame and logging its dimensions."""
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: Cannot open webcam")
+            return False
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            print("Error: Cannot read frame from webcam")
+            return False
+        print(f"Captured frame size: {frame.shape[1]}x{frame.shape[0]}")
+        return True 
