@@ -93,6 +93,16 @@ def main():
             2
         )
 
+        # Draw angle indicators at the bottom of the frame
+        h_img, w_img = frame.shape[:2]
+        cv2.putText(frame, f"Pose: {pose}", (10, h_img-50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        # Get raw angles from detector for visualization
+        if hasattr(det, 'last_raw_pitch') and hasattr(det, 'last_raw_yaw'):
+            cv2.putText(frame, f"Pitch: {det.last_raw_pitch:.1f}° Yaw: {det.last_raw_yaw:.1f}°", 
+                       (10, h_img-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
         # show results on original frame
         cv2.imshow("Head Pose Test", frame)
         # exit on 'q' key
