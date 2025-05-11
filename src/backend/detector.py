@@ -8,6 +8,7 @@ class HeadEyeDetector:
         True if (placeholder) blink detected
 """
 import cv2
+import os
 
 class HeadEyeDetector:
     """Detect head pose and blinks from video frames."""
@@ -18,6 +19,16 @@ class HeadEyeDetector:
         )
         if self.face_cascade.empty():
             print("Warning: Haar cascade not loaded; face detection will be disabled.")
+        # load LBF facemark model for landmarks
+        self.landmark_model = None
+        try:
+            # create facemark and load model file
+            self.landmark_model = cv2.face.createFacemarkLBF()
+            model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'lbfmodel.yaml')
+            self.landmark_model.loadModel(model_path)
+        except Exception as e:
+            print(f"Warning: failed to load facemark model: {e}")
+            self.landmark_model = None
 
     def detect_head_pose(self, frame):
         """Return head pose as one of: left, right, up, down, center."""
@@ -40,9 +51,17 @@ class HeadEyeDetector:
         return faces[0]
 
     def detect_landmarks(self, frame, face_box):
-        """Stub for facial landmark detection; returns empty list for now."""
-        # face_box is (x, y, w, h) tuple; real implementation pending
-        return []
+        """Detect facial landmarks using pretrained LBF model; returns list of (x,y) or empty."""
+        # ensure model is loaded and face_box is provided
+        if self.landmark_model is None or face_box is None:
+            return []
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Facemark expects list of face rectangles
+        ok, landmarks = self.landmark_model.fit(gray, [tuple(face_box)])
+        if not ok or not landmarks:
+            return []
+        # landmarks[0] is N x 2 array of points
+        return landmarks[0].tolist()
 
     def test_camera(self):
         """Test camera setup by capturing one frame and logging its dimensions."""
