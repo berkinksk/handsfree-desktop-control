@@ -177,3 +177,5 @@ cython_debug/
 *.h5
 *.pth
 *.sqlite3
+
+src/frontend/Improvement_Plan_Tracker.txt
