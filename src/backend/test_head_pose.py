@@ -1,117 +1,67 @@
 import cv2
+import numpy as np
+import time
 import sys
 import os
-# ensure src is on path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from backend.detector import HeadEyeDetector
+
+# Adjust the path so we can import the HeadEyeDetector if needed
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Ensure the project root is in sys.path to allow importing from src package
+PROJECT_ROOT = os.path.join(CURRENT_DIR, os.pardir, os.pardir)
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+# Import the HeadEyeDetector class from the backend module
+try:
+    from src.backend.detector import HeadEyeDetector
+except ImportError:
+    # Fallback to relative import if running as a script within the package
+    from detector import HeadEyeDetector
 
 def main():
-    det = HeadEyeDetector()
-    # debug: report model load status
-    print(f"Face cascade loaded: {not det.face_cascade.empty()}")
-    print(f"Landmark model loaded: {det.landmark_model is not None}")
+    # Initialize the head-eye detector
+    detector = HeadEyeDetector()
+    # Open a connection to the default webcam (index 0)
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Error: Cannot open webcam")
+        print("Error: Unable to access the webcam.")
         return
+    print("Press 'q' to quit the head pose test.")
 
-    # create window once for testing (allows visibility check)
-    cv2.namedWindow("Head Pose Test", cv2.WINDOW_NORMAL)
-
-    # speed optimization and informative logging
-    resize_width = 320
-    last_pose = None
-    last_face_detected = None
-    frame_count = 0
-
-    # loop for real-time testing
+    # Main loop to read frames and detect head pose
     while True:
-        # exit if window was closed by user
-        if cv2.getWindowProperty("Head Pose Test", cv2.WND_PROP_VISIBLE) < 1:
-            break
-
         ret, frame = cap.read()
-        if not ret:
-            print("Error: Cannot read frame")
+        if not ret or frame is None:
+            print("Failed to grab frame from webcam. Exiting...")
             break
 
-        # increment frame counter
-        frame_count += 1
+        # Flip the frame horizontally for a mirror view (optional, makes it easier to align movements)
+        frame = cv2.flip(frame, 1)
 
-        # resize for faster detection
-        h_o, w_o = frame.shape[:2]
-        scale = resize_width / float(w_o)
-        h_s = int(h_o * scale)
-        frame_small = cv2.resize(frame, (resize_width, h_s))
+        # Detect head pose
+        direction = detector.detect_head_pose(frame)
 
-        # run detection on resized frame
-        face_small = det.detect_face(frame_small)
-        # detect landmarks on resized frame
-        landmarks_small = det.detect_landmarks(frame_small, face_small)
-        # estimate pose on full-resolution frame for more accurate angles
-        pose = det.detect_head_pose(frame)
-        face_detected = face_small is not None
-
-        # log landmarks if found, flatten nested lists robustly
-        if landmarks_small:
-            # flatten landmarks list
-            flat_landmarks = []
-            for pt in landmarks_small:
-                if isinstance(pt, (list, tuple)) and pt and isinstance(pt[0], (list, tuple)):
-                    flat_landmarks.extend(pt)
-                else:
-                    flat_landmarks.append(pt)
-            print(f"[Frame {frame_count}] Landmarks detected: {len(flat_landmarks)} points")
-            # draw up to first 50 landmarks on original frame
-            for lx, ly in flat_landmarks[:50]:
-                x_l = int(lx / scale)
-                y_l = int(ly / scale)
-                cv2.circle(frame, (x_l, y_l), 2, (255, 0, 0), -1)
-
-        # log when detection or pose changes
-        if face_detected != last_face_detected or pose != last_pose:
-            print(f"[Frame {frame_count}] Face detected: {face_detected}, Pose: {pose}")
-            last_face_detected, last_pose = face_detected, pose
-
-        # map face coords back to original frame and annotate
-        if face_detected:
-            x_s, y_s, w_s, h_s = face_small
-            x = int(x_s / scale)
-            y = int(y_s / scale)
-            w = int(w_s / scale)
-            h = int(h_s / scale)
+        # Visual feedback: draw the face box and put text of direction
+        face_box = detector.detect_face(frame)
+        if face_box is not None:
+            x, y, w, h = face_box
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        cv2.putText(frame, f"Pose: {direction.upper()}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2, cv2.LINE_AA)
 
-        # annotate pose on original frame
-        cv2.putText(
-            frame,
-            f"Pose: {pose}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 0, 255),
-            2
-        )
+        # (Optional) Draw a line indicating nose direction for debug:
+        # We can project a 3D forward vector to see where the nose is pointing.
+        # Here we reuse the last rotation from detector (not directly accessible; we could compute again).
+        # For simplicity, this step is skipped or could be implemented by recalculating solvePnP here.
 
-        # Draw angle indicators at the bottom of the frame
-        h_img, w_img = frame.shape[:2]
-        cv2.putText(frame, f"Pose: {pose}", (10, h_img-50), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        # Get raw angles from detector for visualization
-        if hasattr(det, 'last_raw_pitch') and hasattr(det, 'last_raw_yaw'):
-            cv2.putText(frame, f"Pitch: {det.last_raw_pitch:.1f}° Yaw: {det.last_raw_yaw:.1f}°", 
-                       (10, h_img-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-        # show results on original frame
         cv2.imshow("Head Pose Test", frame)
-        # exit on 'q' key
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 27:  # 'q' or ESC to quit
             break
 
-    # cleanup
+    # Cleanup
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__ == '__main__':
-    main() 
+if __name__ == "__main__":
+    main()
