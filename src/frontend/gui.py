@@ -1,8 +1,11 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QSlider, QSpinBox
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import sys
 
 class MainWindow(QMainWindow):
+    # Signals for thread-safe updates
+    status_update = pyqtSignal(str)
+    blink_detected = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Head-Eye Control System")
@@ -54,6 +57,14 @@ class MainWindow(QMainWindow):
         self.blink_threshold_spinbox.valueChanged.connect(self.on_blink_threshold_changed)
 
         self.setCentralWidget(central)
+        
+        # Connect signals to update slots
+        self.status_update.connect(self.update_status_label)
+        self.blink_detected.connect(self.on_blink_detected)
+        
+        # Dummy calls to test real-time updates
+        QTimer.singleShot(1000, lambda: self.status_update.emit("Calibrated"))
+        QTimer.singleShot(2000, lambda: self.blink_detected.emit())
 
     def on_calibrate(self):
         """Stub slot for calibration button click."""
@@ -70,6 +81,19 @@ class MainWindow(QMainWindow):
         """Stub handler for blink threshold spinbox value change."""
         print(f"Blink threshold changed to {value}")
         self.blink_threshold_label.setText(f"Blink Detection Threshold: {value}")
+
+    def update_status_label(self, status):
+        """Slot to update the main status label."""
+        self.status_label.setText(f"Status: {status}")
+        print(f"Status updated to {status}")
+
+    def on_blink_detected(self):
+        """Slot to indicate a blink event in the GUI."""
+        # Flash blink indicator label
+        self.blink_indicator.setText("Blink: Detected!")
+        print("Blink detected event")
+        # Reset after short delay
+        QTimer.singleShot(500, lambda: self.blink_indicator.setText("Blink: N/A"))
 
 def launch_app():
     """Launch the stub GUI application."""
