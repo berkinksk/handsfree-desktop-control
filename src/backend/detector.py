@@ -25,10 +25,10 @@ class HeadEyeDetector:
         self.blink_consec_frames = 3        # frames required below threshold to count a blink
         self.blink_counter = 0             # frame counter for consecutive blink frames
         # Head pose threshold defaults (in degrees)
-        self.pose_thresholds = {"left": 5.0, "right": 5.0, "up": 5.0, "down": 5.0}  # lower thresholds for pose detection
+        self.pose_thresholds = {"left": 2.0, "right": 2.0, "up": 2.0, "down": 2.0}  # lowered thresholds for more responsive pose detection
         # Smoothing state
         self.last_pose = "center"
-        self.pose_consec_frames = 2        # require 2 consecutive frames to confirm pose change
+        self.pose_consec_frames = 1        # require only 1 consecutive frame to confirm pose change for responsiveness
         self.pose_counter = 0
         # Store last raw angles for debugging/display
         self.last_raw_pitch = 0.0
