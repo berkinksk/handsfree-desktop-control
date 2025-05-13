@@ -21,8 +21,8 @@ class HeadEyeDetector:
             min_tracking_confidence=0.5
         )
         # Blink detection settings
-        self.blink_threshold = 0.3          # EAR threshold for blink (increased sensitivity)
-        self.blink_consec_frames = 2        # frames required below threshold to count a blink (faster detection)
+        self.blink_threshold = 0.2          # EAR threshold for blink
+        self.blink_consec_frames = 3        # frames required below threshold to count a blink
         self.blink_counter = 0             # frame counter for consecutive blink frames
         # Head pose threshold defaults (in degrees)
         self.pose_thresholds = {"left": 5.0, "right": 5.0, "up": 5.0, "down": 5.0}  # lower thresholds for pose detection
@@ -101,12 +101,12 @@ class HeadEyeDetector:
             return "center"
         # Select key landmark points for pose estimation (MediaPipe FaceMesh indices)
         image_points = np.array([
-            landmarks[1],    # Nose tip
+            landmarks[4],    # Nose tip
             landmarks[152],  # Chin
-            landmarks[33],   # Left eye outer corner
-            landmarks[263],  # Right eye outer corner
-            landmarks[61],   # Left mouth corner
-            landmarks[291]   # Right mouth corner
+            landmarks[263],  # Left eye outer corner
+            landmarks[130],  # Right eye outer corner
+            landmarks[291],  # Left mouth corner
+            landmarks[61]    # Right mouth corner
         ], dtype="double")
         # 3D model points corresponding to the above landmarks (an approximate average face model)
         model_points = np.array([
