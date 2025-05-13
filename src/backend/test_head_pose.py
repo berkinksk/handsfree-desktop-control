@@ -18,6 +18,7 @@ def main():
     frame_count = 0
     last_pose = None
     last_face_detected = None
+    last_blink = False  # track blink state
 
     while True:
         # Break loop if window is closed
@@ -29,9 +30,11 @@ def main():
             break
         frame_count += 1
 
-        # Run face detection and head pose on the current frame
+        # Run full head-pose and blink detection pipeline
+        result = det.process_frame(frame)
+        pose_label = result['pose']
+        blink_detected = result['blink']
         face_box = det.detect_face(frame)
-        pose_label = det.detect_head_pose(frame)
         face_detected = face_box is not None
 
         # Log any changes in face presence or pose
@@ -40,6 +43,11 @@ def main():
             last_face_detected = face_detected
             last_pose = pose_label
 
+        # Log blink events when they occur
+        if blink_detected and not last_blink:
+            print(f"[Frame {frame_count}] Blink detected")
+        last_blink = blink_detected
+
         # Draw a rectangle around the face if detected
         if face_detected:
             x, y, w, h = face_box
@@ -47,6 +55,9 @@ def main():
         # Annotate the pose label on the frame
         cv2.putText(frame, f"Pose: {pose_label}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # Annotate blink status on the frame
+        cv2.putText(frame, f"Blink: {blink_detected}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
         # Also display the raw pitch and yaw angles for reference
         if hasattr(det, 'last_raw_pitch') and hasattr(det, 'last_raw_yaw'):
             angles_text = f"Pitch: {det.last_raw_pitch:.1f}°  Yaw: {det.last_raw_yaw:.1f}°"
