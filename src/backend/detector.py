@@ -2,168 +2,270 @@ import cv2
 import numpy as np
 import math
 import os
+# Initialize Mediapipe within the class to avoid global dependency issues
 
 class HeadEyeDetector:
-    """Detect head pose and blinks from video frames."""
+    """Detect head pose and blinks from video frames using Mediapipe Face Mesh."""
     def __init__(self):
-        # Initialize face detector (Haar cascade)
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
-        if self.face_cascade.empty():
-            print("Warning: Haar cascade not loaded; face detection will be disabled.")
-        # Initialize facemark model for 68 facial landmarks
-        self.landmark_model = None
+        # Try importing Mediapipe (must be installed in the environment)
         try:
-            self.landmark_model = cv2.face.createFacemarkLBF()
-            # Path to the pretrained LBF model file (make sure it exists)
-            model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'lbfmodel.yaml')
-            self.landmark_model.loadModel(model_path)
-        except Exception as e:
-            print(f"Warning: failed to load facemark model: {e}")
-            self.landmark_model = None
-
-        # Define 3D model points of facial landmarks for pose estimation.
-        # These points correspond to the 2D landmark indices:
-        # 0: nose tip, 1: chin, 2: left eye corner, 3: right eye corner, 4: left mouth, 5: right mouth.
-        # The 3D coordinates are an approximate model of a generic face (in mm).
-        self.model_points_3D = np.array([
-            (0.0, 0.0, 0.0),        # Nose tip
-            (0.0, -150.0, -150.0),  # Chin (roughly 15cm below nose tip, back 15cm)
-            (-150.0, 150.0, -125.0),# Left eye left corner (x=-15cm, y=15cm, z=-12.5cm)
-            (150.0, 150.0, -125.0), # Right eye right corner (x=15cm, y=15cm, z=-12.5cm)
-            (-100.0, -150.0, -125.0), # Left mouth corner (x=-10cm, y=-15cm, z=-12.5cm)
-            (100.0, -150.0, -125.0)   # Right mouth corner (x=10cm, y=-15cm, z=-12.5cm)
-        ], dtype=np.float32)
-
-        # We will set camera calibration parameters when we know the frame size (done in detect_head_pose).
-        self.camera_matrix = None
-        self.dist_coeffs = np.zeros((4, 1))  # assuming no lens distortion
+            import mediapipe as mp
+        except ImportError as e:
+            raise RuntimeError("Mediapipe is not installed. Install it via 'pip install mediapipe'.")
+        # Initialize Mediapipe FaceMesh for one face
+        self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=False,       # iris landmarks not needed for our use
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        # Blink detection settings
+        self.blink_threshold = 0.2          # EAR threshold for blink
+        self.blink_consec_frames = 3        # frames required below threshold to count a blink
+        self.blink_counter = 0             # frame counter for consecutive blink frames
+        # Head pose threshold defaults (in degrees)
+        self.pose_thresholds = {"left": 15.0, "right": 15.0, "up": 15.0, "down": 10.0}
+        # Smoothing state
+        self.last_pose = "center"
+        self.pose_consec_frames = 2        # require 2 consecutive frames to confirm pose change
+        self.pose_counter = 0
+        # Store last raw angles for debugging/display
+        self.last_raw_pitch = 0.0
+        self.last_raw_yaw = 0.0
+        # Adaptive thresholding state
+        self.adaptive_thresholds = True
+        self.pitch_max = 0.0
+        self.pitch_min = 0.0
+        self.yaw_max = 0.0
+        self.angle_history = []
+        self.history_size = 20
+        self.initial_frames = 0           # counter for initial calibration frames
+        # Internal flag and storage for landmark reuse
+        self._landmarks_ready = False
+        self.last_landmarks = []          # will hold last detected landmarks (list of (x,y) points)
 
     def detect_face(self, frame):
-        """Detect a face in the frame. Returns (x, y, w, h) for the first face or None if not found."""
-        if self.face_cascade.empty():
+        """Detect face in the frame and store landmarks. Returns (x,y,w,h) of face or None."""
+        # Convert BGR image to RGB for Mediapipe
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.mp_face_mesh.process(frame_rgb)
+        if results.multi_face_landmarks:
+            # Use the first detected face's landmarks
+            face_landmarks = results.multi_face_landmarks[0].landmark
+            h, w = frame.shape[:2]
+            # Convert normalized landmark coordinates to pixel coordinates
+            self.last_landmarks = [(int(lm.x * w), int(lm.y * h)) for lm in face_landmarks]
+            # Compute a bounding box around the face landmarks
+            xs = [pt[0] for pt in self.last_landmarks]; ys = [pt[1] for pt in self.last_landmarks]
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            face_box = (x_min, y_min, x_max - x_min, y_max - y_min)
+            # Flag that landmarks for this frame are ready to use
+            self._landmarks_ready = True
+            return face_box
+        else:
+            # No face detected in this frame
+            self.last_landmarks = []
+            self._landmarks_ready = False
             return None
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # Detect faces in the image (scaleFactor and minNeighbors tuned for webcam face)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-        if len(faces) == 0:
-            return None
-        # Pick the first face detected (faces is an array of [x,y,w,h] boxes)
-        return faces[0]
 
     def detect_landmarks(self, frame, face_box):
-        """Detect 68 facial landmarks within the given face box. Returns a list of (x,y) points."""
-        if self.landmark_model is None or face_box is None:
-            return []
-        # Prepare the face region for landmark detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # OpenCV Facemark LBF expects a list of rectangles [ (x,y,w,h) ], here we pass our single face box.
-        ok, landmarks = self.landmark_model.fit(gray, [tuple(face_box)])
-        if not ok or landmarks is None:
-            return []
-        # landmarks[0] is an array of shape (68, 2) for the 68 points
-        points = landmarks[0][0] if isinstance(landmarks[0], tuple) else landmarks[0]
-        # Convert to Python list of (x, y) tuples
-        return [(int(pt[0]), int(pt[1])) for pt in points]
-
-    def detect_head_pose(self, frame):
-        """Estimate the head pose as one of: "left", "right", "up", "down", "center".""" 
-        # Step 1: Face detection
+        """Return facial landmarks for the detected face as a list of (x,y) points, or [] if none."""
+        # If landmarks from detect_face are already available, reuse them
+        if self._landmarks_ready and self.last_landmarks:
+            return self.last_landmarks
+        # Otherwise, try to detect face/landmarks now
         face = self.detect_face(frame)
         if face is None:
-            # No face detected, can't determine pose (return "center" as a fallback)
+            return []
+        return self.last_landmarks
+
+    def detect_head_pose(self, frame):
+        """Estimate head orientation; returns 'left', 'right', 'up', 'down', or 'center'. """
+        # Avoid duplicate computation: if detect_face was just called on this frame, use stored landmarks
+        if self._landmarks_ready and self.last_landmarks:
+            landmarks = self.last_landmarks
+        else:
+            # Otherwise, run face detection now
+            face_box = self.detect_face(frame)
+            if face_box is None or not self.last_landmarks:
+                # No face found
+                return "center"
+            landmarks = self.last_landmarks
+        # We've used the landmarks for this frame, reset the flag
+        self._landmarks_ready = False
+
+        # Need sufficient landmarks to compute pose
+        if len(landmarks) < 1:
             return "center"
-        x, y, w, h = face
-        # Step 2: Facial landmark detection
-        landmarks = self.detect_landmarks(frame, (x, y, w, h))
-        if len(landmarks) < 68:
-            # Landmarks not detected, return center as default
-            return "center"
-        # Define the 2D image points from landmark positions
+        # Select key landmark points for pose (Mediapipe indices for nose, chin, eye corners, mouth corners)
         image_points = np.array([
-            landmarks[30],  # Nose tip (index 30 in 0-based index)
-            landmarks[8],   # Chin (index 8)
-            landmarks[36],  # Left eye left corner (index 36)
-            landmarks[45],  # Right eye right corner (index 45)
-            landmarks[48],  # Left mouth corner (index 48)
-            landmarks[54]   # Right mouth corner (index 54)
-        ], dtype=np.float32)
-        # Initialize camera matrix if not done yet or if frame size changed
-        if self.camera_matrix is None:
-            frame_height, frame_width = frame.shape[0], frame.shape[1]
-            focal_length = frame_width  # approximate focal length using frame width
-            center = (frame_width / 2, frame_height / 2)
-            self.camera_matrix = np.array([
-                [focal_length, 0, center[0]],
-                [0, focal_length, center[1]],
-                [0, 0, 1]
-            ], dtype=np.float32)
-        # Step 3: SolvePnP to find 3D pose
-        success, rotation_vector, translation_vector = cv2.solvePnP(
-            self.model_points_3D, image_points, self.camera_matrix, self.dist_coeffs,
-            flags=cv2.SOLVEPNP_ITERATIVE
-        )
+            landmarks[4],    # Nose tip
+            landmarks[152],  # Chin
+            landmarks[263],  # Left eye outer corner
+            landmarks[130],  # Right eye outer corner
+            landmarks[291],  # Left mouth corner
+            landmarks[61]    # Right mouth corner
+        ], dtype="double")
+        # 3D model points corresponding to the above landmarks (an approximate average face model)
+        model_points = np.array([
+            (0.0, 0.0, 0.0),             # Nose tip
+            (0.0, -330.0, -65.0),        # Chin
+            (-225.0, 170.0, -135.0),     # Left eye outer corner
+            (225.0, 170.0, -135.0),      # Right eye outer corner
+            (-150.0, -150.0, -125.0),    # Left mouth corner
+            (150.0, -150.0, -125.0)      # Right mouth corner
+        ], dtype="double")
+        # Camera intrinsic matrix (approximate focal length = frame width)
+        h, w = frame.shape[:2]
+        focal_length = w
+        cam_matrix = np.array([[focal_length, 0, w/2],
+                                [0, focal_length, h/2],
+                                [0, 0, 1]], dtype="double")
+        dist_coeffs = np.zeros((4,1))  # assume no lens distortion
+        # SolvePnP to get rotation and translation vectors
+        success, rvec, tvec = cv2.solvePnP(model_points, image_points, cam_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
         if not success:
-            # solvePnP failed (should not usually happen if points are valid)
             return "center"
         # Convert rotation vector to rotation matrix
-        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-        # Project the rotation matrix to Euler angles (in degrees) for yaw, pitch, and roll
-        # Using the conventions: 
-        # yaw   = rotation around Y-axis (left/right),
-        # pitch = rotation around X-axis (up/down),
-        # roll  = rotation around Z-axis (tilt sideways).
-        # We derive yaw, pitch from the rotation matrix.
-        # Avoid gimbal lock by checking for cos(pitch) near zero.
-        sy = math.sqrt(rotation_matrix[0,0]**2 + rotation_matrix[1,0]**2)
-        singular = sy < 1e-6
-        if not singular:
-            pitch_rad = math.atan2(rotation_matrix[2,1], rotation_matrix[2,2])
-            yaw_rad   = math.atan2(-rotation_matrix[2,0], sy)
-            roll_rad  = math.atan2(rotation_matrix[1,0], rotation_matrix[0,0])
+        rmat, _ = cv2.Rodrigues(rvec)
+        # Get Euler angles from the rotation matrix
+        proj_mat = np.hstack((rmat, tvec))
+        _, _, _, _, _, _, eulerAngles = cv2.decomposeProjectionMatrix(proj_mat)
+        pitch = float(eulerAngles[0]); yaw = float(eulerAngles[1]); roll = float(eulerAngles[2])
+        # Normalize angles to [-180,180], then constrain to [-90,90] for easier interpretation
+        if pitch > 90: pitch -= 180
+        if pitch < -90: pitch += 180
+        if yaw > 90: yaw -= 180
+        if yaw < -90: yaw += 180
+        # Store raw angles for debugging/display
+        self.last_raw_pitch = pitch
+        self.last_raw_yaw = yaw
+        # Record history for adaptive thresholding
+        self.angle_history.append((pitch, yaw))
+        if len(self.angle_history) > self.history_size:
+            self.angle_history.pop(0)
+        # Update adaptive thresholds after enough frames
+        if self.adaptive_thresholds and len(self.angle_history) > 10:
+            # Exclude extreme outliers by taking the 3rd largest/smallest values
+            sorted_pitch = sorted(p for p, _ in self.angle_history)
+            sorted_yaw = sorted(abs(y) for _, y in self.angle_history)
+            # Update observed extremes
+            if sorted_pitch[-3] > self.pitch_max: 
+                self.pitch_max = sorted_pitch[-3]
+            if sorted_pitch[2] < self.pitch_min: 
+                self.pitch_min = sorted_pitch[2]
+            if sorted_yaw[-3] > self.yaw_max: 
+                self.yaw_max = sorted_yaw[-3]
+        # Determine pose label
+        if self.initial_frames < 15:
+            # During initial calibration period, don't trust movements (assume neutral)
+            self.initial_frames += 1
+            new_pose = "center"
         else:
-            # Gimbal lock case (pitch ~ 90°)
-            pitch_rad = math.atan2(-rotation_matrix[1,2], rotation_matrix[1,1])
-            yaw_rad   = math.atan2(-rotation_matrix[2,0], sy)
-            roll_rad  = 0
-        # Convert to degrees
-        pitch = math.degrees(pitch_rad)
-        yaw   = math.degrees(yaw_rad)
-        roll  = math.degrees(roll_rad)
-        # Step 4: Determine direction based on yaw/pitch angles
-        direction = "center"
-        # We set threshold angles to decide what is considered a significant turn/tilt
-        YAW_THRESHOLD = 20    # degrees left/right
-        PITCH_THRESHOLD = 15  # degrees up/down
-        if yaw < -YAW_THRESHOLD:
-            direction = "right"   # (Note: if yaw is negative, user turned right from camera perspective)
-        elif yaw > YAW_THRESHOLD:
-            direction = "left"
-        elif pitch < -PITCH_THRESHOLD:
-            direction = "up"      # negative pitch: looking up (camera sees chin)
-        elif pitch > PITCH_THRESHOLD:
-            direction = "down"    # positive pitch: looking down (camera sees forehead)
+            # Use adaptive thresholds if enabled and we have sufficient history
+            if self.adaptive_thresholds and len(self.angle_history) > 15:
+                # Compute adaptive thresholds as a percentage of observed range (with minimum floors)
+                right_thresh = max(12.0, 0.7 * self.yaw_max)
+                left_thresh  = max(12.0, 0.7 * self.yaw_max)
+                down_thresh  = max(8.0,  0.6 * self.pitch_max)
+                up_thresh    = max(12.0, 0.6 * abs(self.pitch_min))
+            else:
+                # Use fixed default thresholds
+                right_thresh = self.pose_thresholds["right"]
+                left_thresh  = self.pose_thresholds["left"]
+                down_thresh  = self.pose_thresholds["down"]
+                up_thresh    = self.pose_thresholds["up"]
+            # Classify based on yaw and pitch
+            if yaw > right_thresh:
+                new_pose = "right"
+            elif yaw < -left_thresh:
+                new_pose = "left"
+            elif pitch > down_thresh:
+                new_pose = "down"
+            elif pitch < -up_thresh:
+                new_pose = "up"
+            else:
+                new_pose = "center"
+        # Smooth output: require pose to hold for a couple frames (except returning to center which can be faster)
+        if new_pose == self.last_pose:
+            self.pose_counter += 1
         else:
-            direction = "center"
-        return direction
+            self.pose_counter = 0
+        if self.pose_counter >= self.pose_consec_frames or (new_pose == "center" and self.pose_counter >= 1):
+            # Commit the new pose after it has been stable
+            self.last_pose = new_pose
+        return self.last_pose
 
     def detect_blink(self, frame):
-        """Return True if a blink (eyes closed) is detected in the frame, else False."""
-        # For now, this is a placeholder. We could implement a simple eye-aspect-ratio check using landmarks,
-        # or integrate a CNN model in the future.
-        return False
+        """Detect blink using Eye Aspect Ratio (EAR) on the facial landmarks."""
+        face_box = self.detect_face(frame)
+        landmarks = self.last_landmarks if self._landmarks_ready else []
+        # Reset landmark-ready flag after using it
+        self._landmarks_ready = False
+        if face_box is None or not landmarks:
+            # No face/landmarks; reset blink counter
+            self.blink_counter = 0
+            return False
+        # Define points around each eye for EAR calculation:
+        # Left eye (subject's left eye) – using outer corner, top lid midpoint, bottom lid midpoint, inner corner
+        left_eye_points = [
+            landmarks[263],  # outer corner (left eye, right side)
+            landmarks[386],  # top lid midpoint
+            landmarks[386],  # (repeat top point for pair calculation)
+            landmarks[362],  # inner corner (left eye, left side)
+            landmarks[374],  # bottom lid midpoint
+            landmarks[374]   # (repeat bottom point)
+        ]
+        # Right eye (subject's right eye)
+        right_eye_points = [
+            landmarks[130],  # outer corner (right eye, left side)
+            landmarks[159],  # top lid midpoint
+            landmarks[159],  # (repeat)
+            landmarks[133],  # inner corner (right eye, right side)
+            landmarks[145],  # bottom lid midpoint
+            landmarks[145]   # (repeat)
+        ]
+        # Compute EAR for each eye
+        def compute_ear(eye_pts):
+            p1, p2, p3, p4, p5, p6 = eye_pts
+            # Vertical distances
+            vert1 = np.linalg.norm(np.array(p2) - np.array(p6))
+            vert2 = np.linalg.norm(np.array(p3) - np.array(p5))
+            # Horizontal distance
+            horiz = np.linalg.norm(np.array(p1) - np.array(p4))
+            return ((vert1 + vert2) / (2.0 * horiz)) if horiz > 0 else 0.0
+        left_ear = compute_ear(left_eye_points)
+        right_ear = compute_ear(right_eye_points)
+        ear_avg = (left_ear + right_ear) / 2.0
+        # Blink detection logic
+        blink_detected = False
+        if ear_avg < self.blink_threshold:
+            self.blink_counter += 1
+        else:
+            # If eyes opened back up:
+            if self.blink_counter >= self.blink_consec_frames:
+                blink_detected = True   # a blink was completed
+            self.blink_counter = 0
+        return blink_detected
 
     def test_camera(self):
-        """Test camera connectivity by capturing one frame and printing its dimensions."""
+        """Quick test to check if a webcam can be opened."""
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             print("Error: Cannot open webcam")
             return False
         ret, frame = cap.read()
         cap.release()
-        if not ret or frame is None:
+        if not ret:
             print("Error: Cannot read frame from webcam")
             return False
         print(f"Captured frame size: {frame.shape[1]}x{frame.shape[0]}")
         return True
+
+    def process_frame(self, frame):
+        """Process a frame and return a dict with head pose and blink status."""
+        pose = self.detect_head_pose(frame)
+        blink = self.detect_blink(frame)
+        return {"pose": pose, "blink": blink}
