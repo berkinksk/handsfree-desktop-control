@@ -41,6 +41,11 @@ class HeadEyeDetector:
         self.angle_history = []
         self.history_size = 20
         self.initial_frames = 0           # counter for initial calibration frames
+        self.calib_frames = 30             # number of frames to compute neutral baseline
+        self.calib_pitch_sum = 0.0         # sum of raw pitch during calibration
+        self.calib_yaw_sum = 0.0           # sum of raw yaw during calibration
+        self.neutral_pitch = 0.0           # computed average neutral pitch
+        self.neutral_yaw = 0.0             # computed average neutral yaw
         # Internal flag and storage for landmark reuse
         self._landmarks_ready = False
         self.last_landmarks = []          # will hold last detected landmarks (list of (x,y) points)
@@ -134,11 +139,23 @@ class HeadEyeDetector:
         proj_mat = np.hstack((rmat, tvec))
         _, _, _, _, _, _, eulerAngles = cv2.decomposeProjectionMatrix(proj_mat)
         pitch = float(eulerAngles[0]); yaw = float(eulerAngles[1]); roll = float(eulerAngles[2])
-        # Normalize angles to [-180,180], then constrain to [-90,90] for easier interpretation
+        # Normalize angles to [-180,180], then constrain to [-90,90]
         if pitch > 90: pitch -= 180
         if pitch < -90: pitch += 180
         if yaw > 90: yaw -= 180
         if yaw < -90: yaw += 180
+        # Accumulate initial frames to compute neutral baseline
+        if self.initial_frames < self.calib_frames:
+            self.calib_pitch_sum += pitch
+            self.calib_yaw_sum += yaw
+            if self.initial_frames == self.calib_frames - 1:
+                # Compute average baseline from accumulated sums
+                self.neutral_pitch = self.calib_pitch_sum / self.calib_frames
+                self.neutral_yaw = self.calib_yaw_sum / self.calib_frames
+        # Apply baseline offset after calibration
+        if self.initial_frames >= self.calib_frames:
+            pitch -= self.neutral_pitch
+            yaw -= self.neutral_yaw
         # Store raw angles for debugging/display
         self.last_raw_pitch = pitch
         self.last_raw_yaw = yaw
