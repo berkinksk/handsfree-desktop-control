@@ -21,11 +21,11 @@ class HeadEyeDetector:
             min_tracking_confidence=0.5
         )
         # Blink detection settings
-        self.blink_threshold = 0.2          # EAR threshold for blink
-        self.blink_consec_frames = 3        # frames required below threshold to count a blink
+        self.blink_threshold = 0.3          # EAR threshold for blink (increased sensitivity)
+        self.blink_consec_frames = 2        # frames required below threshold to count a blink (faster detection)
         self.blink_counter = 0             # frame counter for consecutive blink frames
         # Head pose threshold defaults (in degrees)
-        self.pose_thresholds = {"left": 15.0, "right": 15.0, "up": 15.0, "down": 10.0}
+        self.pose_thresholds = {"left": 5.0, "right": 5.0, "up": 5.0, "down": 5.0}  # lower thresholds for pose detection
         # Smoothing state
         self.last_pose = "center"
         self.pose_consec_frames = 2        # require 2 consecutive frames to confirm pose change
@@ -34,7 +34,7 @@ class HeadEyeDetector:
         self.last_raw_pitch = 0.0
         self.last_raw_yaw = 0.0
         # Adaptive thresholding state
-        self.adaptive_thresholds = True
+        self.adaptive_thresholds = False    # disable adaptive thresholding for consistency
         self.pitch_max = 0.0
         self.pitch_min = 0.0
         self.yaw_max = 0.0
@@ -99,14 +99,14 @@ class HeadEyeDetector:
         # Need sufficient landmarks to compute pose
         if len(landmarks) < 1:
             return "center"
-        # Select key landmark points for pose (Mediapipe indices for nose, chin, eye corners, mouth corners)
+        # Select key landmark points for pose estimation (MediaPipe FaceMesh indices)
         image_points = np.array([
-            landmarks[4],    # Nose tip
+            landmarks[1],    # Nose tip
             landmarks[152],  # Chin
-            landmarks[263],  # Left eye outer corner
-            landmarks[130],  # Right eye outer corner
-            landmarks[291],  # Left mouth corner
-            landmarks[61]    # Right mouth corner
+            landmarks[33],   # Left eye outer corner
+            landmarks[263],  # Right eye outer corner
+            landmarks[61],   # Left mouth corner
+            landmarks[291]   # Right mouth corner
         ], dtype="double")
         # 3D model points corresponding to the above landmarks (an approximate average face model)
         model_points = np.array([
@@ -199,54 +199,39 @@ class HeadEyeDetector:
         return self.last_pose
 
     def detect_blink(self, frame):
-        """Detect blink using Eye Aspect Ratio (EAR) on the facial landmarks."""
+        """Detect blink using Eye Aspect Ratio (EAR) on Mediapipe face landmarks."""
         face_box = self.detect_face(frame)
-        landmarks = self.last_landmarks if self._landmarks_ready else []
-        # Reset landmark-ready flag after using it
+        landmarks = self.last_landmarks
+        # Reset landmark-ready flag
         self._landmarks_ready = False
         if face_box is None or not landmarks:
-            # No face/landmarks; reset blink counter
             self.blink_counter = 0
             return False
-        # Define points around each eye for EAR calculation:
-        # Left eye (subject's left eye) – using outer corner, top lid midpoint, bottom lid midpoint, inner corner
-        left_eye_points = [
-            landmarks[263],  # outer corner (left eye, right side)
-            landmarks[386],  # top lid midpoint
-            landmarks[386],  # (repeat top point for pair calculation)
-            landmarks[362],  # inner corner (left eye, left side)
-            landmarks[374],  # bottom lid midpoint
-            landmarks[374]   # (repeat bottom point)
-        ]
-        # Right eye (subject's right eye)
-        right_eye_points = [
-            landmarks[130],  # outer corner (right eye, left side)
-            landmarks[159],  # top lid midpoint
-            landmarks[159],  # (repeat)
-            landmarks[133],  # inner corner (right eye, right side)
-            landmarks[145],  # bottom lid midpoint
-            landmarks[145]   # (repeat)
-        ]
+        # MediaPipe FaceMesh indices for eye landmarks
+        left_outer = landmarks[33]
+        left_inner = landmarks[133]
+        left_top = landmarks[159]
+        left_bottom = landmarks[145]
+        right_outer = landmarks[263]
+        right_inner = landmarks[362]
+        right_top = landmarks[386]
+        right_bottom = landmarks[374]
+        # Compute distances
+        left_horiz = np.linalg.norm(np.array(left_outer) - np.array(left_inner))
+        left_vert = np.linalg.norm(np.array(left_top) - np.array(left_bottom))
+        right_horiz = np.linalg.norm(np.array(right_outer) - np.array(right_inner))
+        right_vert = np.linalg.norm(np.array(right_top) - np.array(right_bottom))
         # Compute EAR for each eye
-        def compute_ear(eye_pts):
-            p1, p2, p3, p4, p5, p6 = eye_pts
-            # Vertical distances
-            vert1 = np.linalg.norm(np.array(p2) - np.array(p6))
-            vert2 = np.linalg.norm(np.array(p3) - np.array(p5))
-            # Horizontal distance
-            horiz = np.linalg.norm(np.array(p1) - np.array(p4))
-            return ((vert1 + vert2) / (2.0 * horiz)) if horiz > 0 else 0.0
-        left_ear = compute_ear(left_eye_points)
-        right_ear = compute_ear(right_eye_points)
+        left_ear = left_vert / (left_horiz + 1e-6)
+        right_ear = right_vert / (right_horiz + 1e-6)
         ear_avg = (left_ear + right_ear) / 2.0
         # Blink detection logic
         blink_detected = False
         if ear_avg < self.blink_threshold:
             self.blink_counter += 1
         else:
-            # If eyes opened back up:
             if self.blink_counter >= self.blink_consec_frames:
-                blink_detected = True   # a blink was completed
+                blink_detected = True
             self.blink_counter = 0
         return blink_detected
 
