@@ -43,7 +43,37 @@ class HeadEyeController:
         self.conn.commit()
 
     def calibrate(self):
-        print("TODO calibrate")  # will save neutral pose in DB
+        # Calibration routine: capture head pose data for 2 seconds to determine neutral position
+        print("Calibration started")
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: Cannot open webcam for calibration")
+            return False
+        start_time = time.time()
+        yaw_vals, pitch_vals = [], []
+        while time.time() - start_time < 2.0:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            pose = self.detector.detect_head_pose(frame)
+            # Map pose string to numeric yaw and pitch
+            y = -1.0 if pose == "left" else (1.0 if pose == "right" else 0.0)
+            p = 1.0 if pose == "up" else (-1.0 if pose == "down" else 0.0)
+            yaw_vals.append(y)
+            pitch_vals.append(p)
+        cap.release()
+        # Compute neutral positions
+        neutral_yaw = sum(yaw_vals) / len(yaw_vals) if yaw_vals else 0.0
+        neutral_pitch = sum(pitch_vals) / len(pitch_vals) if pitch_vals else 0.0
+        neutral_roll = 0.0
+        # Store in database
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO calibration (neutral_yaw, neutral_pitch, neutral_roll) VALUES (?, ?, ?)",
+            (neutral_yaw, neutral_pitch, neutral_roll)
+        )
+        self.conn.commit()
+        print(f"Calibration complete: neutral_yaw={neutral_yaw}, neutral_pitch={neutral_pitch}, neutral_roll={neutral_roll}")
         return True
 
     def start_control(self):
