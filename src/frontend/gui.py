@@ -55,6 +55,7 @@ class AnimatedButton(QtWidgets.QPushButton):
         self.hover_color = base_color.lighter(hover_factor)
         self._current = self.base_color
         self._radius = radius
+        self._is_dark_mode = False  # Track dark mode state
 
         self._apply_style()
 
@@ -68,18 +69,28 @@ class AnimatedButton(QtWidgets.QPushButton):
 
     # ‒‒‒ Styling helpers ‒‒‒
     def _apply_style(self):
+        # Use black text if background is light (value > 200), white text if background is dark
+        background_is_light = self._current.value() > 200
+        text_color = "black" if background_is_light else "white"
         self.setStyleSheet(
             f"""
             QPushButton {{
                 background-color: {self._current.name()};
-                color: white;
+                color: {text_color};
                 border: none;
                 border-radius: {self._radius}px;
-                padding: 8px 16px;
+                padding: 10px 20px;
+                font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Open Sans", "Helvetica Neue", sans-serif;
+                font-size: 10pt;
                 font-weight: 500;
+                letter-spacing: 0.3px;
             }}
             """
         )
+
+    def set_dark_mode(self, is_dark: bool):
+        self._is_dark_mode = is_dark
+        self._apply_style()
 
     # ‒‒‒ Hover handling ‒‒‒
     def enterEvent(self, e):  # noqa: N802
@@ -236,6 +247,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Hands-Free Desktop Control")
         self.resize(1100, 650)
 
+        # Set application-wide font
+        app = QtWidgets.QApplication.instance()
+        font = QtGui.QFont("Segoe UI", 9)  # Default size 9
+        app.setFont(font)
+
+        # Apply font styling to the window
+        self.setStyleSheet("""
+            * {
+                font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Open Sans", "Helvetica Neue", sans-serif;
+            }
+            QLabel {
+                font-size: 9pt;
+            }
+            QLabel#status_label, QLabel#track_label, QLabel#blink_label {
+                font-size: 10pt;
+                font-weight: 500;
+            }
+        """)
+
         # ───────────── Central layout ─────────────
         central = QtWidgets.QWidget(self)
         self.setCentralWidget(central)
@@ -265,17 +295,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Labels
         self.status_lbl = QtWidgets.QLabel("Status: Idle")
+        self.status_lbl.setObjectName("status_label")
         self.track_lbl = QtWidgets.QLabel("Tracking: Off")
+        self.track_lbl.setObjectName("track_label")
         self.blink_lbl = QtWidgets.QLabel("Blink: N/A")
+        self.blink_lbl.setObjectName("blink_label")
         for l in (self.status_lbl, self.track_lbl, self.blink_lbl):
-            l.setStyleSheet("font-weight: 500;")
             cbox.addWidget(l)
 
         cbox.addSpacing(4)
 
         # Slider
         cbox.addWidget(QtWidgets.QLabel("Cursor Sensitivity:"))
-        self.sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=10, value=5)
+        self.sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=100, value=50)
+        self.sens_slider.setPageStep(1)  # Make the slider move in smaller increments
+        self.sens_slider.setSingleStep(1)  # Fine-grained control for keyboard and mouse wheel
         self._style_slider(self.sens_slider)
         cbox.addWidget(self.sens_slider)
 
@@ -348,15 +382,16 @@ class MainWindow(QtWidgets.QMainWindow):
         widget.setGraphicsEffect(eff)
 
     @staticmethod
-    def _style_slider(slider):
-        accent = "#0078d7"
+    def _style_slider(slider, is_dark_mode=False):
+        handle_color = "#FFFFFF" if is_dark_mode else "#000000"
+        groove_color = "#666666" if is_dark_mode else "#ccc"
         slider.setStyleSheet(
             f"""
             QSlider::groove:horizontal {{
-                height:6px; background:#ccc; border-radius:3px;
+                height:6px; background:{groove_color}; border-radius:3px;
             }}
             QSlider::handle:horizontal {{
-                background:{accent}; width:14px; height:14px;
+                background:{handle_color}; width:14px; height:14px;
                 margin:-4px 0; border-radius:7px;
             }}"""
         )
@@ -377,12 +412,14 @@ class MainWindow(QtWidgets.QMainWindow):
         app.setPalette(pal)
         self.ctrl.setStyleSheet(
             "background:#2c2c2c;border-radius:12px;")  # labels inherit palette
+        self._style_slider(self.sens_slider, True)  # Update slider for dark mode
 
     def apply_light_palette(self):
         app = QtWidgets.QApplication.instance()
         QtWidgets.QApplication.setStyle("Fusion")
         app.setPalette(app.style().standardPalette())
         self.ctrl.setStyleSheet("background:#f0f0f0;border-radius:12px;")
+        self._style_slider(self.sens_slider, False)  # Update slider for light mode
 
     @QtCore.pyqtSlot(bool)
     def apply_theme(self, dark_enabled: bool):
@@ -396,6 +433,10 @@ class MainWindow(QtWidgets.QMainWindow):
             # Reset toggle track ON color to default blue
             self.theme_switch.track_on = QtGui.QColor("#0078d7")
             self.theme_switch.update()
+            
+        # Update button dark mode states
+        self.calib_btn.set_dark_mode(dark_enabled)
+        self.start_btn.set_dark_mode(dark_enabled)
 
     # ‒‒‒ Button slots ‒‒‒
     def calibrate(self):
@@ -442,6 +483,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not ok:
             return
 
+        # Flip the frame horizontally to remove mirror effect
+        frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, _ = rgb.shape
         lbl_w, lbl_h = self.video_lbl.width(), self.video_lbl.height()
