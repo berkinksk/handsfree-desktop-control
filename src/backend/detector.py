@@ -12,7 +12,8 @@ class HeadEyeDetector:
                  norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
                  norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
                  norm_pupil_y_diff_threshold_right=0.060,  # For 'right' pose
-                 pupil_action_consec_frames=23): # Approx. 0.75 sec at 30 FPS for held action
+                 pupil_action_consec_frames=23, # Approx. 0.75 sec at 30 FPS for held action
+                 **kwargs):
         # Initialize MediaPipe Face Mesh solution
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
@@ -69,6 +70,16 @@ class HeadEyeDetector:
         self.last_raw_physical_yaw = 0.0 
         self.last_raw_physical_pitch = 0.0 
         self.last_raw_physical_roll = 0.0
+
+        # Thresholds for pose determination (degrees)
+        self.yaw_threshold_strong = float(kwargs.get('yaw_threshold_strong', 3.5))
+        self.yaw_threshold_strong_left = float(kwargs.get('yaw_threshold_strong_left', 3.5))
+        self.pitch_threshold_up = float(kwargs.get('pitch_threshold_up', 1.3))
+        self.pitch_threshold_down = float(kwargs.get('pitch_threshold_down', 1.0))
+
+        self.center_threshold_yaw = float(kwargs.get('center_threshold_yaw', 3.5))
+        self.center_threshold_pitch = float(kwargs.get('center_threshold_pitch', 1.3))
+        self.roll_threshold_center = float(kwargs.get('roll_threshold_center', 5.0))
 
     def _calculate_head_pose(self, landmarks, frame_shape):
         """
@@ -145,24 +156,20 @@ class HeadEyeDetector:
         # especially if pitch/yaw seem unstable or if head tilt significantly impacts controls.
         pose_label = "center" 
 
-        yaw_threshold_strong = 0.7
-        yaw_threshold_strong_left = 0.7
-        pitch_threshold_strong = 0.7
-        center_threshold_yaw = 0.7
-        center_threshold_pitch = 0.7
-
-        is_centered_yaw = abs(yaw_for_logic) < center_threshold_yaw
-        is_centered_pitch = abs(pitch_for_logic) < center_threshold_pitch
+        # Thresholds for classifying pose based on smoothed yaw and pitch angles (in degrees).
+        # These values were found to be satisfactory during Step 3.1 tuning.
+        is_centered_yaw = abs(yaw_for_logic) < self.center_threshold_yaw
+        is_centered_pitch = abs(pitch_for_logic) < self.center_threshold_pitch
 
         if is_centered_yaw and is_centered_pitch:
             pose_label = "center"
-        elif yaw_for_logic > yaw_threshold_strong:
+        elif yaw_for_logic > self.yaw_threshold_strong:
             pose_label = "right"
-        elif yaw_for_logic <= -yaw_threshold_strong_left:
+        elif yaw_for_logic <= -self.yaw_threshold_strong_left:
             pose_label = "left"
-        elif pitch_for_logic > pitch_threshold_strong:
+        elif pitch_for_logic > self.pitch_threshold_up:
             pose_label = "up"
-        elif pitch_for_logic < -pitch_threshold_strong:
+        elif pitch_for_logic < -self.pitch_threshold_down:
             pose_label = "down"
         
         return pose_label

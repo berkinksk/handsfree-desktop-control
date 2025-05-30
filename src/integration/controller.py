@@ -128,8 +128,8 @@ class HeadEyeController(QtCore.QObject):
         # TODO: Make sensitivities, smoothing, dead_zone configurable via GUI
         self.cursor_controller = CursorController(
             screen_w, screen_h,
-            horizontal_sensitivity=20, # Default value
-            vertical_sensitivity=25, # Default value
+            horizontal_sensitivity=10, # Default value, halved from 20
+            vertical_sensitivity=12, # Default value, halved from 25
             smoothing_factor=0.6,    # Default value
             dead_zone_x=1.0,         # Default value
             dead_zone_y=1.0          # Default value

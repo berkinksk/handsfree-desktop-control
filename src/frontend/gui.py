@@ -253,14 +253,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Slider
         cbox.addWidget(QtWidgets.QLabel("Cursor Sensitivity (H, V):"))
-        self.sens_h_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=50, value=20)
-        self.sens_v_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=50, value=25)
-        self._style_slider(self.sens_h_slider)
-        self._style_slider(self.sens_v_slider)
-        cbox.addWidget(QtWidgets.QLabel("Horizontal:"))
-        cbox.addWidget(self.sens_h_slider)
-        cbox.addWidget(QtWidgets.QLabel("Vertical:"))
-        cbox.addWidget(self.sens_v_slider)
+        sens_layout = QtWidgets.QGridLayout()
+        sens_layout.setContentsMargins(0, 0, 0, 0)
+        sens_layout.setSpacing(4)
+
+        sens_layout.addWidget(QtWidgets.QLabel("Horizontal:"), 0, 0)
+        self.h_sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._style_slider(self.h_sens_slider)
+        self.h_sens_slider.setRange(1, 100)
+        self.h_sens_slider.setValue(10)
+        self.h_sens_slider.valueChanged.connect(self._update_sensitivities)
+        sens_layout.addWidget(self.h_sens_slider, 0, 1)
+
+        sens_layout.addWidget(QtWidgets.QLabel("Vertical:"), 1, 0)
+        self.v_sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._style_slider(self.v_sens_slider)
+        self.v_sens_slider.setRange(1, 100)
+        self.v_sens_slider.setValue(12)
+        self.v_sens_slider.valueChanged.connect(self._update_sensitivities)
+        sens_layout.addWidget(self.v_sens_slider, 1, 1)
+
+        cbox.addLayout(sens_layout)
 
         # Buttons
         self.calib_btn = AnimatedButton("Calibrate")
@@ -374,8 +387,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.theme_switch.update()
         # Update slider styles for theme
         accent_color = "#A9A9A9" if dark_enabled else "#0078d7"
-        self._style_slider_themed(self.sens_h_slider, accent_color)
-        self._style_slider_themed(self.sens_v_slider, accent_color)
+        self._style_slider_themed(self.h_sens_slider, accent_color)
+        self._style_slider_themed(self.v_sens_slider, accent_color)
 
     @staticmethod
     def _style_slider_themed(slider, accent_color_hex: str):
@@ -407,13 +420,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.start_btn.clicked.connect(self.toggle_start_stop_controller)
         self.calib_btn.clicked.connect(self.controller.calibrate)
         
-        self.sens_h_slider.valueChanged.connect(self._update_sensitivities)
-        self.sens_v_slider.valueChanged.connect(self._update_sensitivities)
         self._update_sensitivities()
 
     def _update_sensitivities(self):
-        h_sens = self.sens_h_slider.value()
-        v_sens = self.sens_v_slider.value()
+        h_sens = self.h_sens_slider.value()
+        v_sens = self.v_sens_slider.value()
         self.controller.set_cursor_sensitivity(h_sens, v_sens)
 
     @QtCore.pyqtSlot(np.ndarray)
