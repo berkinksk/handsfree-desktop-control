@@ -3,28 +3,56 @@ import numpy as np
 import mediapipe as mp
 
 class HeadEyeDetector:
-    """Detect head pose (orientation) and blinks from video frames using MediaPipe Face Mesh."""
+    """Detect head pose (orientation) and pupil-based actions (with hold) from video frames using MediaPipe Face Mesh."""
     def __init__(self,
                  min_detection_confidence=0.5,
                  min_tracking_confidence=0.5,
-                 blink_threshold=0.27,
-                 blink_consec_frames=3):
+                 norm_pupil_y_diff_threshold_center=0.060, # For 'center' pose (was 0.070)
+                 norm_pupil_y_diff_threshold_up=0.020,     # For 'up' pose (was 0.030)
+                 norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
+                 norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
+                 norm_pupil_y_diff_threshold_right=0.060,  # For 'right' pose
+                 pupil_action_consec_frames=23): # Approx. 0.75 sec at 30 FPS for held action
         # Initialize MediaPipe Face Mesh solution
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            refine_landmarks=False,  # set True to get iris landmarks if needed for precision
+            refine_landmarks=True,  # Pupil landmarks require refine_landmarks=True
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence
         )
-        # Blink detection parameters
-        self.blink_threshold = blink_threshold    # EAR threshold for eyes considered closed
-        self.blink_consec_frames = blink_consec_frames  # how many consecutive frames below threshold to count a blink
-        self.blink_counter = 0    # counter for consecutive frames of eyes below threshold
-        self.total_blinks = 0     # total blinks detected
-        # Predefine indices for landmarks used in pose estimation (2D/3D points)
-        # Using tip of nose, outer eye corners, mouth corners, and chin point
+        
+        # Pupil action parameters
+        # These thresholds determine sensitivity to the normalized vertical difference between pupil landmarks.
+        # A larger Y difference (e.g., one pupil higher than the other, potentially due to eyelid movement closing over one pupil more)
+        # normalized by the horizontal distance between pupils, can trigger an "action".
+        # This is currently used as a proxy for blink detection.
+        # Tuning these values requires empirical testing based on user, lighting, and desired responsiveness.
+        # - Higher values make action detection less sensitive.
+        # - Lower values make action detection more sensitive.
+        # Consider that head tilt (roll) might also affect this metric if not perfectly compensated.
+        self.norm_pupil_y_diff_thresholds = {
+            "center": norm_pupil_y_diff_threshold_center, # Threshold when head is centered
+            "up": norm_pupil_y_diff_threshold_up,         # Threshold when head is tilted up
+            "down": norm_pupil_y_diff_threshold_down,     # Threshold when head is tilted down
+            "left": norm_pupil_y_diff_threshold_left,     # Threshold when head is turned left
+            "right": norm_pupil_y_diff_threshold_right    # Threshold when head is turned right
+        }
+        # Number of consecutive frames the pupil y-difference must exceed the threshold to trigger a held action.
+        # E.g., 23 frames at ~30 FPS is roughly 0.75 seconds.
+        # Adjust for desired hold duration before an action is registered.
+        self.pupil_action_consec_frames = pupil_action_consec_frames
+        self.pupil_action_hold_counter = 0 # Counter for frames norm_pupil_y_diff is above threshold
+        self.total_actions = 0     # Total actions detected
+        self.action_pending_reset = False # True if action triggered and waiting for condition to cease
+
+        # Predefine indices for landmarks used in pose estimation
         self.pose_landmark_indices = [1, 33, 263, 61, 291, 199]
+ 
+        # Predefine indices for pupil landmarks (approximate center of pupils)
+        # Left pupil: 473, Right pupil: 468
+        self.left_pupil_idx = 473
+        self.right_pupil_idx = 468
         
         # Store last computed angles (will store smoothed angles)
         self.last_pitch = 0.0
@@ -35,9 +63,12 @@ class HeadEyeDetector:
         self.smooth_pitch = 0.0
         self.smooth_yaw = 0.0
         self.smooth_roll = 0.0
-        self.smoothing_alpha = 0.4 # Smoothing factor (0 < alpha <= 1). Smaller = more smoothing.
+        self.smoothing_alpha = 0.4
 
-        self.face_landmarks_for_drawing = None # Store landmarks for drawing
+        self.face_landmarks_for_drawing = None 
+        self.last_raw_physical_yaw = 0.0 
+        self.last_raw_physical_pitch = 0.0 
+        self.last_raw_physical_roll = 0.0
 
     def _calculate_head_pose(self, landmarks, frame_shape):
         """
@@ -50,42 +81,32 @@ class HeadEyeDetector:
         face3d_pts = []
         for idx in self.pose_landmark_indices:
             lm = landmarks[idx]
-            # Convert normalized landmark coordinates to pixel coordinates
             x, y = int(lm.x * img_w), int(lm.y * img_h)
             face2d_pts.append([x, y])
-            # Construct the 3D point. 
-            # Using a more constant scaling for Z to improve stability.
-            # The exact scale of Z matters less than its relative values for solvePnP with a calibrated camera,
-            # but for an estimated camera, extreme Z values can hurt.
-            z_scale_factor = 60.0 # An arbitrary scale factor for depth (reverted from 120.0)
-            if idx == 1: # Nose landmark
-                face3d_pts.append([x, y, lm.z * z_scale_factor * 1.5]) # Keep nose slightly more prominent
+            z_scale_factor = 60.0 
+            if idx == 1: 
+                face3d_pts.append([x, y, lm.z * z_scale_factor * 1.5]) 
             else:
                 face3d_pts.append([x, y, lm.z * z_scale_factor])
 
         face2d_pts = np.array(face2d_pts, dtype=np.float64)
         face3d_pts = np.array(face3d_pts, dtype=np.float64)
 
-        # Define camera matrix (assuming no lens distortion and focal length ~ frame width)
         focal_length = img_w
         cam_matrix = np.array([
             [focal_length, 0, img_w / 2],
             [0, focal_length, img_h / 2],
             [0, 0, 1]
         ], dtype=np.float64)
-        dist_coeffs = np.zeros((4, 1), dtype=np.float64)  # assume no distortion
+        dist_coeffs = np.zeros((4, 1), dtype=np.float64)
 
-        # SolvePnP to get rotation vector
         success, rot_vec, trans_vec = cv2.solvePnP(face3d_pts, face2d_pts, cam_matrix, dist_coeffs, flags=cv2.SOLVEPNP_EPNP)
         if not success:
-            # solvePnP failed
             self.last_pitch, self.last_yaw, self.last_roll = 0.0, 0.0, 0.0
             return "center"
 
-        # Convert rotation vector to rotation matrix
         rot_mat, _ = cv2.Rodrigues(rot_vec)
 
-        # Calculate raw Euler angles based on the rotation matrix
         sy = np.sqrt(rot_mat[0,0] * rot_mat[0,0] +  rot_mat[1,0] * rot_mat[1,0])
         singular = sy < 1e-6
 
@@ -94,39 +115,41 @@ class HeadEyeDetector:
         raw_physical_roll: float
 
         if not singular:
-            # Physical Pitch (nod up/down, rotation around X-axis from camera perspective)
             raw_physical_pitch = np.arctan2(rot_mat[2,1], rot_mat[2,2]) * 180 / np.pi
-            # Physical Yaw (turn left/right, rotation around Y-axis from camera perspective)
             raw_physical_yaw   = np.arctan2(-rot_mat[2,0], sy) * 180 / np.pi
-            # Physical Roll (tilt side-to-side, rotation around Z-axis from camera perspective)
             raw_physical_roll  = np.arctan2(rot_mat[1,0], rot_mat[0,0]) * 180 / np.pi
-        else: # Gimbal lock case
+        else: 
             raw_physical_yaw   = np.arctan2(-rot_mat[2,0], sy) * 180 / np.pi 
-            raw_physical_pitch = 0.0 # Conventionally set to 0 in this gimbal lock case
-            raw_physical_roll  = np.arctan2(-rot_mat[0,2], rot_mat[1,1]) * 180 / np.pi # Derived
+            raw_physical_pitch = 0.0 
+            raw_physical_roll  = np.arctan2(-rot_mat[0,2], rot_mat[1,1]) * 180 / np.pi
         
-        # Apply EMA smoothing to the correctly mapped physical angles
+        self.last_raw_physical_yaw = raw_physical_yaw
+        self.last_raw_physical_pitch = raw_physical_pitch
+        self.last_raw_physical_roll = raw_physical_roll
+
         self.smooth_pitch = self.smoothing_alpha * raw_physical_pitch + (1 - self.smoothing_alpha) * self.smooth_pitch
         self.smooth_yaw   = self.smoothing_alpha * raw_physical_yaw   + (1 - self.smoothing_alpha) * self.smooth_yaw
         self.smooth_roll  = self.smoothing_alpha * raw_physical_roll  + (1 - self.smoothing_alpha) * self.smooth_roll
 
-        # Use smoothed values for pose logic
         pitch_for_logic = self.smooth_pitch
         yaw_for_logic   = self.smooth_yaw
 
-        # Store smoothed angles for returning as main angle values (previously named raw_... in return dict)
         self.last_pitch = pitch_for_logic
         self.last_yaw   = yaw_for_logic
-        self.last_roll  = self.smooth_roll # self.smooth_roll is used directly for consistency here
+        self.last_roll  = self.smooth_roll
 
-        # Determine head orientation based on pitch/yaw thresholds
-        pose_label = "center" # Default to center
+        # NOTE on Roll: While roll is calculated and smoothed, it's not directly used in the current
+        # discrete pose_label logic (center, left, right, up, down).
+        # However, its stability can affect the overall PnP solution and perceived smoothness.
+        # Monitor its behavior (e.g., self.last_raw_physical_roll, self.last_roll) during testing,
+        # especially if pitch/yaw seem unstable or if head tilt significantly impacts controls.
+        pose_label = "center" 
 
-        # Thresholds for determining pose
-        yaw_threshold_strong = 6  # Degrees for definite left/right
-        pitch_threshold_strong = 12 # Degrees for definite up/down
-        center_threshold_yaw = 3 # Degrees for yaw to be considered centered
-        center_threshold_pitch = 7 # Degrees for pitch to be considered centered
+        yaw_threshold_strong = 0.7
+        yaw_threshold_strong_left = 0.7
+        pitch_threshold_strong = 0.7
+        center_threshold_yaw = 0.7
+        center_threshold_pitch = 0.7
 
         is_centered_yaw = abs(yaw_for_logic) < center_threshold_yaw
         is_centered_pitch = abs(pitch_for_logic) < center_threshold_pitch
@@ -135,116 +158,135 @@ class HeadEyeDetector:
             pose_label = "center"
         elif yaw_for_logic > yaw_threshold_strong:
             pose_label = "right"
-        elif yaw_for_logic < -yaw_threshold_strong:
+        elif yaw_for_logic <= -yaw_threshold_strong_left:
             pose_label = "left"
         elif pitch_for_logic > pitch_threshold_strong:
             pose_label = "up"
         elif pitch_for_logic < -pitch_threshold_strong:
             pose_label = "down"
-        # If conditions are between center_threshold and strong_threshold, 
-        # it will remain "center" unless a strong threshold is met.
-        # This creates a hysteresis effect, reducing rapid changes for small movements around the strong thresholds.
-        # For more complex scenarios (e.g., diagonal movements like "up-right"),
-        # additional logic would be needed here.
-
+        
         return pose_label
 
-    def _calculate_blink(self, landmarks, frame_shape):
+    def _calculate_pupil_y_diff_action(self, landmarks, frame_shape, pose_label):
         """
-        Internal method to calculate blink status from processed landmarks.
-        Updates self.blink_counter and self.total_blinks.
-        Returns True if a blink is detected on this frame (i.e., a full blink event completed).
+        Internal method to calculate pupil y-difference action status based on current pose.
+        An action is triggered if NormPupilYDiff > pose_specific_threshold for pupil_action_consec_frames.
+        Updates self.pupil_action_hold_counter and self.total_actions.
+        Returns True if an action is detected on this frame and the current norm_pupil_y_diff.
         """
         img_h, img_w, _ = frame_shape
-        # Define indices around the eyes for EAR calculation (using Mediapipe landmarks)
-        left_eye_indices = [33, 160, 158, 133, 153, 144]
-        right_eye_indices = [263, 387, 385, 362, 380, 373]
+
+        left_pupil_lm = landmarks[self.left_pupil_idx]
+        right_pupil_lm = landmarks[self.right_pupil_idx]
+
+        left_pupil_y = left_pupil_lm.y * img_h
+        right_pupil_y = right_pupil_lm.y * img_h
+        left_pupil_x = left_pupil_lm.x * img_w
+        right_pupil_x = right_pupil_lm.x * img_w
         
-        left_eye_pts = [(int(landmarks[i].x * img_w), int(landmarks[i].y * img_h)) for i in left_eye_indices]
-        right_eye_pts = [(int(landmarks[i].x * img_w), int(landmarks[i].y * img_h)) for i in right_eye_indices]
+        pupil_y_pixel_diff = abs(left_pupil_y - right_pupil_y)
+        pupil_x_pixel_dist = abs(left_pupil_x - right_pupil_x)
 
-        def eye_aspect_ratio(eye_points):
-            p1, p2, p3, p4, p5, p6 = eye_points
-            vert1 = np.linalg.norm(np.array(p2) - np.array(p6))
-            vert2 = np.linalg.norm(np.array(p3) - np.array(p5))
-            horiz = np.linalg.norm(np.array(p1) - np.array(p4))
-            return (vert1 + vert2) / (2.0 * horiz) if horiz > 0 else 0
+        epsilon = 1e-6 # To prevent division by zero
+        normalized_pupil_y_diff = 0.0
+        if pupil_x_pixel_dist > epsilon:
+            normalized_pupil_y_diff = pupil_y_pixel_diff / pupil_x_pixel_dist
+        else: # Unlikely case, but handle it (e.g. if pupils are vertically aligned)
+            normalized_pupil_y_diff = pupil_y_pixel_diff / epsilon # Make it a large number if Y diff is non-zero
 
-        left_EAR = eye_aspect_ratio(left_eye_pts)
-        right_EAR = eye_aspect_ratio(right_eye_pts)
-        ear_avg = (left_EAR + right_EAR) / 2.0
+        # Get the threshold specific to the current pose
+        current_threshold = self.norm_pupil_y_diff_thresholds.get(pose_label, self.norm_pupil_y_diff_thresholds["center"]) 
 
-        blink_detected_this_frame = False
-        if ear_avg < self.blink_threshold:
-            self.blink_counter += 1
+        action_detected_this_frame = False
+        # Action detection logic:
+        # If the normalized_pupil_y_diff exceeds the current_threshold for the current pose:
+        # 1. If an action is not already 'pending_reset' (i.e., we are not in the cooldown phase of a previous action):
+        #    a. Increment the hold_counter.
+        #    b. If hold_counter reaches pupil_action_consec_frames:
+        #       i. An action is registered (total_actions incremented, action_detected_this_frame = True).
+        #      ii. Set action_pending_reset = True (enter cooldown; wait for condition to cease).
+        #     iii. Reset hold_counter.
+        # 2. If an action IS 'pending_reset', keep hold_counter at 0 (don't re-trigger while waiting for reset).
+        # If the normalized_pupil_y_diff is below threshold:
+        # 1. Reset hold_counter.
+        # 2. Set action_pending_reset = False (ready for a new action sequence).
+        if normalized_pupil_y_diff > current_threshold:
+            if not self.action_pending_reset:
+                self.pupil_action_hold_counter += 1
+                if self.pupil_action_hold_counter == self.pupil_action_consec_frames:
+                    self.total_actions += 1
+                    action_detected_this_frame = True
+                    self.action_pending_reset = True # Action triggered, now wait for condition to cease
+                    self.pupil_action_hold_counter = 0 # Reset counter
+            else:
+                # Condition still met, but an action was already triggered and is pending reset.
+                # Keep counter at 0 to prevent re-counting while in this state.
+                self.pupil_action_hold_counter = 0
         else:
-            if self.blink_counter >= self.blink_consec_frames:
-                self.total_blinks += 1
-                blink_detected_this_frame = True
-            self.blink_counter = 0
-        
-        return blink_detected_this_frame, ear_avg
+            # Normalized PupilYDiff is below threshold, so reset everything for the next action cycle
+            self.pupil_action_hold_counter = 0 
+            self.action_pending_reset = False # Condition ceased, ready for a new action sequence
+            
+        return action_detected_this_frame, normalized_pupil_y_diff
 
     def process_frame_and_detect_features(self, frame):
         """
-        Processes a single video frame to detect head pose and blinks.
-        This is the main method to call for each frame.
+        Processes a single video frame to detect head pose and pupil actions (with hold).
         Returns a dictionary with detection results.
         """
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(image_rgb)
         
-        self.face_landmarks_for_drawing = None # Reset landmarks for drawing
+        self.face_landmarks_for_drawing = None
 
-        if results.multi_face_landmarks:
-            # Use the first face (since max_num_faces=1)
+        if results.multi_face_landmarks and len(results.multi_face_landmarks[0].landmark) > max(self.left_pupil_idx, self.right_pupil_idx):
             face_landmarks_object = results.multi_face_landmarks[0]
-            landmarks_list = face_landmarks_object.landmark # The list of landmark objects
+            landmarks_list = face_landmarks_object.landmark 
             self.face_landmarks_for_drawing = face_landmarks_object
 
-
             pose_label = self._calculate_head_pose(landmarks_list, frame.shape)
-            blink_detected, ear_avg = self._calculate_blink(landmarks_list, frame.shape)
+            action_detected, norm_pupil_y_diff = self._calculate_pupil_y_diff_action(landmarks_list, frame.shape, pose_label)
             
             return {
                 "pose": pose_label,
-                "blink_detected": blink_detected,
-                "landmarks_mp_object": self.face_landmarks_for_drawing, # For mp_drawing
+                "action_detected": action_detected,
+                "norm_pupil_y_diff": norm_pupil_y_diff,
+                "landmarks_mp_object": self.face_landmarks_for_drawing,
                 "raw_pitch": self.last_pitch,
                 "raw_yaw": self.last_yaw,
+                "raw_physical_yaw": self.last_raw_physical_yaw,
+                "raw_physical_pitch": self.last_raw_physical_pitch,
+                "raw_physical_roll": self.last_raw_physical_roll,
                 "raw_roll": self.last_roll,
-                "total_blinks": self.total_blinks,
-                "ear_avg": ear_avg
+                "total_actions": self.total_actions,
             }
         else:
-            # No face detected
             self.last_pitch, self.last_yaw, self.last_roll = 0.0, 0.0, 0.0
-            self.blink_counter = 0 # Reset blink counter if no face
+            self.pupil_action_hold_counter = 0 # Reset counter if no face
             return {
                 "pose": "center",
-                "blink_detected": False,
+                "action_detected": False,
+                "norm_pupil_y_diff": 0.0,
                 "landmarks_mp_object": None,
                 "raw_pitch": 0.0,
                 "raw_yaw": 0.0,
+                "raw_physical_yaw": 0.0,
+                "raw_physical_pitch": 0.0,
+                "raw_physical_roll": 0.0,
                 "raw_roll": 0.0,
-                "total_blinks": self.total_blinks,
-                "ear_avg": 0.0
+                "total_actions": self.total_actions,
             }
-
-# Removed old detect_head_pose and detect_blink methods as their logic is now in
-# _calculate_head_pose, _calculate_blink, and process_frame_and_detect_features.
-# The original methods are essentially replaced by process_frame_and_detect_features.
 
 # Example usage (for illustration, not part of the class):
 # if __name__ == '__main__':
-#     detector = HeadEyeDetector()
+#     detector = HeadEyeDetector(blink_threshold=0.25, blink_consec_frames=30) # Example instantiation
 #     cap = cv2.VideoCapture(0)
 #     while cap.isOpened():
 #         ret, frame = cap.read()
 #         if not ret:
 #             break
 #         detection_results = detector.process_frame_and_detect_features(frame)
-#         print(f"Pose: {detection_results['pose']}, Blink: {detection_results['blink_detected']}, Total Blinks: {detection_results['total_blinks']}")
+#         print(f"Pose: {detection_results['pose']}, Blink: {detection_results['blink_detected']}, EAR: {detection_results['ear_avg']:.2f}, Total Blinks: {detection_results['total_blinks']}")
 #         # Further processing like drawing landmarks using detection_results['landmarks_mp_object']
 #         # cv2.imshow('Frame', frame) # Assuming drawing happens on the frame
 #         if cv2.waitKey(5) & 0xFF == 27: # ESC key

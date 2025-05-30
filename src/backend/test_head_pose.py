@@ -2,6 +2,33 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from detector import HeadEyeDetector
+# import csv # For logging data
+# import time # For timestamping log entries
+# import datetime # For unique log filenames
+
+# # --- CSV Logging Setup ---
+# LOG_DIRECTORY = "."
+# current_time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+# # Log filename indicates pose-dependent normalized pupil action with 0.75s hold (v4 thresholds)
+# log_filename = f"pose_dep_norm_pupil_action_0_75s_v4_log_{current_time_str}.csv" 
+# log_filepath = f"{LOG_DIRECTORY}/{log_filename}"
+
+# try:
+#     csv_file = open(log_filepath, 'w', newline='')
+#     csv_writer = csv.writer(csv_file)
+#     # Header reflects the actual data being logged
+#     csv_writer.writerow([
+#         "Timestamp", "Frame", 
+#         "RawPhysYaw", "RawPhysPitch", "RawPhysRoll",
+#         "SmoothYaw", "SmoothPitch", "SmoothRoll",
+#         "PoseLabel", "NormPupilYDiff", "PupilActionDetected"
+#     ])
+#     print(f"Logging pose and pose-dependent normalized pupil action (0.75s hold, v4 thresholds) data to: {log_filepath}")
+# except IOError as e:
+#     print(f"Error opening log file {log_filepath}: {e}. Logging will be disabled.")
+#     csv_file = None
+#     csv_writer = None
+# # --- End CSV Logging Setup ---
 
 # Initialize video capture (webcam)
 cap = cv2.VideoCapture(0)
@@ -9,11 +36,17 @@ if not cap.isOpened():
     print("Error: Webcam not accessible")
     exit(1)
 
-# Instantiate our head/eye detector with tuned parameters
-detector = HeadEyeDetector(min_detection_confidence=0.6,
-                           min_tracking_confidence=0.6,
-                           blink_threshold=0.32,
-                           blink_consec_frames=3)
+# Instantiate detector with updated pose-dependent thresholds (v4)
+detector = HeadEyeDetector(
+    min_detection_confidence=0.6, 
+    min_tracking_confidence=0.6,
+    norm_pupil_y_diff_threshold_center=0.060,
+    norm_pupil_y_diff_threshold_up=0.020,    # Updated to match new default (was 0.030) 
+    norm_pupil_y_diff_threshold_down=0.075,   
+    norm_pupil_y_diff_threshold_left=0.025,
+    norm_pupil_y_diff_threshold_right=0.060,  
+    pupil_action_consec_frames=23             
+)
 
 # Utilities for drawing
 mp_drawing = mp.solutions.drawing_utils
@@ -23,9 +56,10 @@ mp_face_mesh = mp.solutions.face_mesh
 landmark_style = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
 connection_style = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1)
 
-WINDOW_NAME = "Head Pose & Blink Detection"
-print(f"Starting live head pose and blink detection. Press 'q' or close window ({WINDOW_NAME}) to quit.")
-blink_text_overlay = ""
+WINDOW_NAME = "Head Pose & Pupil Action (0.75s Hold)" # Updated window title
+print(f"Starting live head pose and pupil action detection (0.75s hold). Press 'q' or close window ({WINDOW_NAME}) to quit.")
+# Text overlay will say "Blink!" but is triggered by pupil action
+action_text_overlay = "" 
 
 # For debugging pose oscillations
 frame_count = 0
@@ -41,22 +75,27 @@ while True:
     # Flip the frame for a mirror view (so it feels natural, like looking in a mirror)
     frame = cv2.flip(frame, 1)
 
-    # Get all detection results from the new method
+    # Get all detection results from the updated method
     detection_results = detector.process_frame_and_detect_features(frame)
 
     pose_label = detection_results["pose"]
-    blink_now = detection_results["blink_detected"]
+    # Internally this is pupil action, but we call it action_now for display
+    action_now = detection_results["action_detected"] 
+    norm_pupil_y_diff = detection_results["norm_pupil_y_diff"]
     landmarks_mp_object = detection_results["landmarks_mp_object"]
     raw_yaw = detection_results["raw_yaw"]
     raw_pitch = detection_results["raw_pitch"]
     raw_roll = detection_results["raw_roll"]
-    total_blinks = detection_results["total_blinks"]
-    ear_avg = detection_results["ear_avg"] # Get EAR
+    raw_physical_yaw = detection_results["raw_physical_yaw"]
+    raw_physical_pitch = detection_results["raw_physical_pitch"]
+    raw_physical_roll = detection_results["raw_physical_roll"]
+    # Internally this is total pupil actions, but display as total_actions
+    total_actions = detection_results["total_actions"]
 
     frame_count += 1
 
     # --- Debugging: Print per-frame info to console ---
-    print(f"Frame: {frame_count:04d} | Pose: {pose_label:<6} | EAR: {ear_avg:.2f} | Yaw: {raw_yaw:6.1f} | Pitch: {raw_pitch:6.1f} | Roll: {raw_roll:6.1f}")
+    print(f"Frame: {frame_count:04d} | Pose: {pose_label:<6} | NormPupilYDiff: {norm_pupil_y_diff:.3f} | Action: {action_now} | TotalActions: {total_actions} | RawPhysYaw: {raw_physical_yaw:6.1f} | RawPhysPitch: {raw_physical_pitch:6.1f} | RawPhysRoll: {raw_physical_roll:6.1f} | SmoothYaw: {raw_yaw:6.1f} | SmoothPitch: {raw_pitch:6.1f} | SmoothRoll: {raw_roll:6.1f}")
 
     # --- Debugging: Detect rapid Left/Right oscillations ---
     if (prev_pose_label == "left" and pose_label == "right") or \
@@ -66,36 +105,44 @@ while True:
     
     prev_pose_label = pose_label # Update previous pose for next frame
 
-    # If a blink was detected on this frame, prepare text to indicate it and print to console
-    if blink_now:
-        blink_text_overlay = "Blink!"
-        print("Blink detected") # Log to console
+    # Display text says "Blink!" but is triggered by pupil action (action_now)
+    if action_now:
+        action_text_overlay = "Blink!"
+        print("Pupil Action detected (held for 0.75s - displayed as Blink!)!") # Updated print
     else:
-        # Clear blink text quickly after showing
-        if blink_text_overlay == "Blink!": # Clear only if it was set
-             # Keep it on screen for a bit longer using a timer mechanism if desired, 
-             # for now, it clears on next frame if no new blink.
-             blink_text_overlay = "" 
+        if action_text_overlay == "Blink!": 
+             action_text_overlay = "" 
 
     # Draw facial landmarks for debugging (using MediaPipe's drawing utils for consistency)
     if landmarks_mp_object:
         mp_drawing.draw_landmarks(
             image=frame,
             landmark_list=landmarks_mp_object,
-            connections=mp_face_mesh.FACEMESH_CONTOURS,
+            connections=mp_face_mesh.FACEMESH_TESSELATION, # Using Tesselation for better pupil viz if needed
             landmark_drawing_spec=landmark_style,
             connection_drawing_spec=connection_style
         )
+        # Also draw iris landmarks if refine_landmarks is True (it is)
+        mp_drawing.draw_landmarks(
+            image=frame,
+            landmark_list=landmarks_mp_object,
+            connections=mp_face_mesh.FACEMESH_IRISES,
+            landmark_drawing_spec=None, # No specific landmark style for irises, just connections
+            connection_drawing_spec=mp_drawing.DrawingSpec(color=(255,0,0), thickness=1) # Blue for irises
+        )
 
-    # Draw head pose direction indicator:
-    img_h, img_w, _ = frame.shape
-    nose_x = int(img_w / 2)
-    nose_y = int(img_h / 2)
-    line_length = 100
-    # Yaw affects horizontal, Pitch affects vertical. Invert pitch for intuitive up/down drawing.
-    end_x = int(nose_x + np.sin(raw_yaw * np.pi / 180) * np.cos(raw_pitch * np.pi / 180) * line_length)
-    end_y = int(nose_y - np.sin(raw_pitch * np.pi / 180) * line_length)
-    cv2.line(frame, (nose_x, nose_y), (end_x, end_y), (255, 0, 0), 3)
+        # Draw head pose direction indicator from the nose tip
+        img_h, img_w, _ = frame.shape
+        # Nose tip landmark is index 1 in Mediapipe Face Mesh
+        nose_landmark = landmarks_mp_object.landmark[1]
+        nose_x = int(nose_landmark.x * img_w)
+        nose_y = int(nose_landmark.y * img_h)
+
+        line_length = 75 # Reduced line length for better visuals when originating from nose
+        # Yaw affects horizontal, Pitch affects vertical. Invert pitch for intuitive up/down drawing.
+        end_x = int(nose_x + np.sin(raw_yaw * np.pi / 180) * np.cos(raw_pitch * np.pi / 180) * line_length)
+        end_y = int(nose_y - np.sin(raw_pitch * np.pi / 180) * line_length)
+        cv2.line(frame, (nose_x, nose_y), (end_x, end_y), (255, 0, 0), 3) # Blue line for pose
 
     # Overlay text: current head pose label
     pose_text_color = (0, 255, 255) # Default yellow
@@ -112,11 +159,12 @@ while True:
 
     cv2.putText(frame, f"Pose: {pose_label}", (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, pose_text_color, 2)
-    # Blink status or count
-    cv2.putText(frame, f"Blinks: {total_blinks}", (20, 80),
+    # Display says "Actions" but counts total_actions (pupil based)
+    cv2.putText(frame, f"Total Actions: {total_actions}", (20, 80),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-    if blink_text_overlay: # Show "Blink!" momentarily
-        cv2.putText(frame, blink_text_overlay, (20, 120),
+    # PupilYDiff value is NOT displayed on screen as per prior user request
+    if action_text_overlay:
+        cv2.putText(frame, action_text_overlay, (20, 120), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
     # Debug info: show raw angles (rounded) for more insight
@@ -138,4 +186,11 @@ while True:
 # Cleanup
 cap.release()
 cv2.destroyAllWindows()
+
+# # --- Close CSV Log File ---
+# if csv_file:
+#     csv_file.close()
+#     print(f"Pose and pose-dependent normalized pupil action data log saved to: {log_filepath}")
+# # --- End Close CSV Log File ---
+
 print(f"Exiting test_head_pose.py. Total L/R oscillations: {pose_oscillations_left_right}")

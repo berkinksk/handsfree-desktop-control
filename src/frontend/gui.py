@@ -12,34 +12,14 @@ import math
 import cv2
 import os
 from PyQt5 import QtCore, QtGui, QtWidgets
+import numpy as np
+
+# Backend integration
+from integration.controller import HeadEyeController
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Backend stub – replace with the real HeadEyeController in your project
-# ─────────────────────────────────────────────────────────────────────────────
-try:
-    from integration.controller import HeadEyeController  # type: ignore
-except ModuleNotFoundError:
-    class HeadEyeController(QtCore.QObject):
-        """Fallback stub so GUI runs even if backend isn't available."""
-        blink_detected = QtCore.pyqtSignal()
-
-        def __init__(self):
-            super().__init__()
-            self.running = False
-
-        def calibrate(self) -> bool:
-            return True
-
-        def start_control(self):
-            self.running = True
-
-        def stop_control(self):
-            self.running = False
-
-
-# ════════════════════════════════════════════════════════════════════════════
 #  Re-usable flat button with colour-fade hover animation
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 class AnimatedButton(QtWidgets.QPushButton):
     def __init__(
         self,
@@ -228,8 +208,6 @@ class ToggleSwitch(QtWidgets.QAbstractButton):
 # ════════════════════════════════════════════════════════════════════════════
 class MainWindow(QtWidgets.QMainWindow):
 
-    FRAME_MS = 30  # ~33 FPS webcam update interval
-
     def __init__(self, controller: HeadEyeController):
         super().__init__()
         self.controller = controller
@@ -267,25 +245,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_lbl = QtWidgets.QLabel("Status: Idle")
         self.track_lbl = QtWidgets.QLabel("Tracking: Off")
         self.blink_lbl = QtWidgets.QLabel("Blink: N/A")
-        for l in (self.status_lbl, self.track_lbl, self.blink_lbl):
-            l.setStyleSheet("font-weight: 500;")
-            cbox.addWidget(l)
+        for l_widget in (self.status_lbl, self.track_lbl, self.blink_lbl):
+            l_widget.setStyleSheet("font-weight: 500;")
+            cbox.addWidget(l_widget)
 
         cbox.addSpacing(4)
 
         # Slider
-        cbox.addWidget(QtWidgets.QLabel("Cursor Sensitivity:"))
-        self.sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=10, value=5)
-        self._style_slider(self.sens_slider)
-        cbox.addWidget(self.sens_slider)
+        cbox.addWidget(QtWidgets.QLabel("Cursor Sensitivity (H, V):"))
+        self.sens_h_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=50, value=20)
+        self.sens_v_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, minimum=1, maximum=50, value=25)
+        self._style_slider(self.sens_h_slider)
+        self._style_slider(self.sens_v_slider)
+        cbox.addWidget(QtWidgets.QLabel("Horizontal:"))
+        cbox.addWidget(self.sens_h_slider)
+        cbox.addWidget(QtWidgets.QLabel("Vertical:"))
+        cbox.addWidget(self.sens_v_slider)
 
         # Buttons
         self.calib_btn = AnimatedButton("Calibrate")
-        self.calib_btn.clicked.connect(self.calibrate)
         cbox.addWidget(self.calib_btn)
 
         self.start_btn = AnimatedButton("Start")
-        self.start_btn.clicked.connect(self.toggle_start)
         cbox.addWidget(self.start_btn)
 
         cbox.addStretch(1)
@@ -326,12 +307,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Initial palette: apply dark mode by default (toggle unchecked)
         self.apply_theme(self.theme_switch.isChecked())
 
-        # Backend ↔ GUI signals
-        self.controller.blink_detected.connect(self.flash_blink)
-
-        # Webcam timer
-        self.cap = None
-        self.timer = QtCore.QTimer(self, timeout=self.update_frame)
+        # Connect to HeadEyeController signals & slots
+        self._connect_controller()
 
     # ‒‒‒ Helper widgets / styles ‒‒‒
     def _round_frame(self, color: str) -> QtWidgets.QFrame:
@@ -358,7 +335,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QSlider::handle:horizontal {{
                 background:{accent}; width:14px; height:14px;
                 margin:-4px 0; border-radius:7px;
-            }}"""
+            }}
+            """
         )
 
     # ‒‒‒ Palette handling ‒‒‒
@@ -388,90 +366,133 @@ class MainWindow(QtWidgets.QMainWindow):
     def apply_theme(self, dark_enabled: bool):
         if dark_enabled:
             self.apply_dark_palette()
-            # Change toggle track color on state ON to dark grey
             self.theme_switch.track_on = QtGui.QColor("#A9A9A9")
             self.theme_switch.update()
         else:
             self.apply_light_palette()
-            # Reset toggle track ON color to default blue
             self.theme_switch.track_on = QtGui.QColor("#0078d7")
             self.theme_switch.update()
+        # Update slider styles for theme
+        accent_color = "#A9A9A9" if dark_enabled else "#0078d7"
+        self._style_slider_themed(self.sens_h_slider, accent_color)
+        self._style_slider_themed(self.sens_v_slider, accent_color)
 
-    # ‒‒‒ Button slots ‒‒‒
-    def calibrate(self):
-        self.status_lbl.setText("Status: Calibrating…")
-        QtWidgets.QApplication.processEvents()
-        success = self.controller.calibrate()
-        self.status_lbl.setText("Status: Calibrated" if success else "Status: Calib. Failed")
-
-    def toggle_start(self):
-        if not self.controller.running:
-            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
-                QtWidgets.QMessageBox.critical(self, "Camera Error", "Unable to open webcam.")
-                self.cap = None
-                return
-            self.controller.start_control()
-            self.controller.running = True
-            self.timer.start(self.FRAME_MS)
-            self.status_lbl.setText("Status: Running")
-            self.track_lbl.setText("Tracking: On")
-            self.start_btn.setText("Stop")
-        else:
-            self.timer.stop()
-            if self.cap:
-                self.cap.release()
-                self.cap = None
-            self.controller.stop_control()
-            self.controller.running = False
-            self.video_lbl.clear()
-            self.video_lbl.setText("Camera Off")
-            self.status_lbl.setText("Status: Stopped")
-            self.track_lbl.setText("Tracking: Off")
-            self.start_btn.setText("Start")
-
-    def flash_blink(self):
-        self.blink_lbl.setText("Blink: Detected!")
-        QtCore.QTimer.singleShot(600, lambda: self.blink_lbl.setText("Blink: N/A"))
-
-    # ‒‒‒ Webcam update loop ‒‒‒
-    def update_frame(self):
-        if not (self.cap and self.cap.isOpened()):
-            return
-        ok, frame = self.cap.read()
-        if not ok:
-            return
-
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, _ = rgb.shape
-        lbl_w, lbl_h = self.video_lbl.width(), self.video_lbl.height()
-
-        # Scale to COVER and crop centre (removes black bars)
-        pixmap = QtGui.QPixmap.fromImage(
-            QtGui.QImage(rgb.data, w, h, w * 3, QtGui.QImage.Format_RGB888)
+    @staticmethod
+    def _style_slider_themed(slider, accent_color_hex: str):
+        slider.setStyleSheet(
+            f"""
+            QSlider::groove:horizontal {{
+                height:6px; background:#ccc; border-radius:3px;
+            }}
+            QSlider::handle:horizontal {{
+                background:{accent_color_hex}; width:14px; height:14px;
+                margin:-4px 0; border-radius:7px;
+            }}
+            """
         )
+
+    # ‒‒‒ Controller Interaction ‒‒‒
+    def _connect_controller(self):
+        if not self.controller.detector:
+            self.show_error_message(f"Critical: HeadEyeDetector failed to initialize in Controller. Check logs.")
+            self.start_btn.setEnabled(False)
+            self.calib_btn.setEnabled(False)
+            return
+
+        self.controller.frame_processed.connect(self.update_video_frame)
+        self.controller.blink_detected.connect(self.flash_blink_indicator)
+        self.controller.calibration_status.connect(self.update_calibration_status)
+        self.controller.error_occurred.connect(self.show_error_message)
+
+        self.start_btn.clicked.connect(self.toggle_start_stop_controller)
+        self.calib_btn.clicked.connect(self.controller.calibrate)
+        
+        self.sens_h_slider.valueChanged.connect(self._update_sensitivities)
+        self.sens_v_slider.valueChanged.connect(self._update_sensitivities)
+        self._update_sensitivities()
+
+    def _update_sensitivities(self):
+        h_sens = self.sens_h_slider.value()
+        v_sens = self.sens_v_slider.value()
+        self.controller.set_cursor_sensitivity(h_sens, v_sens)
+
+    @QtCore.pyqtSlot(np.ndarray)
+    def update_video_frame(self, rgb_frame: np.ndarray):
+        h, w, ch = rgb_frame.shape
+        bytes_per_line = ch * w
+        qt_image = QtGui.QImage(rgb_frame.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
+        
+        lbl_w, lbl_h = self.video_lbl.width(), self.video_lbl.height()
+        pixmap = QtGui.QPixmap.fromImage(qt_image)
+        
+        # Scale to COVER and crop centre (removes black bars)
         scaled = pixmap.scaled(
             lbl_w,
             lbl_h,
             QtCore.Qt.KeepAspectRatioByExpanding,
             QtCore.Qt.SmoothTransformation,
         )
-        x = (scaled.width() - lbl_w) // 2
-        y = (scaled.height() - lbl_h) // 2
-        self.video_lbl.setPixmap(scaled.copy(x, y, lbl_w, lbl_h))
+        # Crop to fit the label display area
+        crop_x = (scaled.width() - lbl_w) // 2
+        crop_y = (scaled.height() - lbl_h) // 2
+        self.video_lbl.setPixmap(scaled.copy(crop_x, crop_y, lbl_w, lbl_h))
+
+    @QtCore.pyqtSlot()
+    def flash_blink_indicator(self):
+        self.blink_lbl.setText("Blink: Detected!")
+        QtCore.QTimer.singleShot(750, lambda: self.blink_lbl.setText("Blink: N/A"))
+
+    @QtCore.pyqtSlot(str)
+    def update_calibration_status(self, status_message: str):
+        self.status_lbl.setText(f"Status: {status_message}")
+        if "Failed" in status_message:
+            QtWidgets.QMessageBox.warning(self, "Calibration Info", status_message)
+        else:
+            QtWidgets.QMessageBox.information(self, "Calibration Info", status_message)
+
+    @QtCore.pyqtSlot(str)
+    def show_error_message(self, error_message: str):
+        self.status_lbl.setText(f"Status: Error")
+        QtWidgets.QMessageBox.critical(self, "Error", error_message)
+        if "Webcam not accessible" in error_message or "HeadEyeDetector not initialized" in error_message:
+            self.start_btn.setText("Start")
+            self.start_btn.setEnabled(True)
+            self.track_lbl.setText("Tracking: Off - Error")
+            self.calib_btn.setEnabled(False)
+
+    def toggle_start_stop_controller(self):
+        if not self.controller.running:
+            self.controller.start_control()
+            if self.controller.running:
+                self.status_lbl.setText("Status: Running")
+                self.track_lbl.setText("Tracking: On")
+                self.start_btn.setText("Stop")
+                self.calib_btn.setEnabled(True)
+            else:
+                self.status_lbl.setText("Status: Error Starting")
+                self.track_lbl.setText("Tracking: Off")
+                self.start_btn.setText("Start")
+                self.calib_btn.setEnabled(False)
+        else:
+            self.controller.stop_control()
+            self.video_lbl.clear()
+            self.video_lbl.setText("Camera Off")
+            self.status_lbl.setText("Status: Stopped")
+            self.track_lbl.setText("Tracking: Off")
+            self.start_btn.setText("Start")
+            self.calib_btn.setEnabled(False)
 
     # ‒‒‒ Cleanup ‒‒‒
     def closeEvent(self, e):  # noqa: N802
-        self.timer.stop()
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
+        self.controller.stop_control()
         super().closeEvent(e)
 
 
 # ════════════════════════════════════════════════════════════════════════════
 def launch_app():
     app = QtWidgets.QApplication(sys.argv)
-    win = MainWindow(HeadEyeController())
+    main_controller = HeadEyeController()
+    win = MainWindow(main_controller)
     win.show()
     sys.exit(app.exec_())
 
