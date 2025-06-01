@@ -13,8 +13,8 @@ class HeadEyeDetector:
                  norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
                  norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
                  norm_pupil_y_diff_threshold_right=0.060,  # For 'right' pose
-                 pupil_action_consec_frames=15, # Approx. 0.5 sec at 30 FPS for held action (was 23)
-                 double_click_window_ms=1000,    # Max time in ms between blinks for a double click (was 500)
+                 pupil_action_consec_frames=10, # Approx. 0.34 sec at 30 FPS for held action (was 15)
+                 double_click_window_ms=1500,    # Max time in ms between blinks for a double click (was 1000)
                  min_time_after_action_ms=300, # Min time in ms before another action can start after one completes
                  **kwargs):
         # Initialize MediaPipe Face Mesh solution
