@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+import time
 
 class HeadEyeDetector:
     """Detect head pose (orientation) and pupil-based actions (with hold) from video frames using MediaPipe Face Mesh."""
@@ -12,7 +13,9 @@ class HeadEyeDetector:
                  norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
                  norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
                  norm_pupil_y_diff_threshold_right=0.060,  # For 'right' pose
-                 pupil_action_consec_frames=23, # Approx. 0.75 sec at 30 FPS for held action
+                 pupil_action_consec_frames=15, # Approx. 0.5 sec at 30 FPS for held action (was 23)
+                 double_click_window_ms=1000,    # Max time in ms between blinks for a double click (was 500)
+                 min_time_after_action_ms=300, # Min time in ms before another action can start after one completes
                  **kwargs):
         # Initialize MediaPipe Face Mesh solution
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -47,6 +50,25 @@ class HeadEyeDetector:
         self.total_actions = 0     # Total actions detected
         self.action_pending_reset = False # True if action triggered and waiting for condition to cease
 
+        # Store timing parameters from init
+        self.double_click_window_ms = double_click_window_ms
+        self.min_time_after_action_ms = min_time_after_action_ms
+
+        # New state variables for double-click logic
+        self.last_blink_time = 0 # Timestamp of the last registered blink event, in ns
+        self.first_blink_of_potential_double_click_time = 0 # Timestamp of the first blink if we are waiting for a second, in ns
+        # These ..._frames attributes are no longer the primary source for ns conversion in _calculate_pupil_y_diff_action
+        # but might be kept if any other logic relies on them or for very rough estimates.
+        # For precision, direct conversion from _ms to _ns is used in the action calculation.
+        self.double_click_window_frames = int((self.double_click_window_ms / 1000.0) * 30) 
+        self.min_frames_after_action = int((self.min_time_after_action_ms / 1000.0) * 30) 
+        # self.frames_since_last_action is effectively replaced by checking (current_time_ns - self.last_blink_time)
+        # self.frames_since_last_action = self.min_frames_after_action + 1 
+        
+        self.CLICK_TYPE_NONE = "NO_ACTION"
+        self.CLICK_TYPE_SINGLE = "SINGLE_CLICK"
+        self.CLICK_TYPE_DOUBLE = "DOUBLE_CLICK"
+        
         # Predefine indices for landmarks used in pose estimation
         self.pose_landmark_indices = [1, 33, 263, 61, 291, 199]
  
@@ -223,9 +245,11 @@ class HeadEyeDetector:
         Internal method to calculate pupil y-difference action status based on current pose.
         An action is triggered if NormPupilYDiff > pose_specific_threshold for pupil_action_consec_frames.
         Updates self.pupil_action_hold_counter and self.total_actions.
-        Returns True if an action is detected on this frame and the current norm_pupil_y_diff.
+        Returns a click type (NO_ACTION, SINGLE_CLICK, DOUBLE_CLICK) and the current norm_pupil_y_diff.
         """
         img_h, img_w, _ = frame_shape
+        # Using time.monotonic_ns() for more precise time comparisons directly
+        current_time_ns = time.monotonic_ns()
 
         left_pupil_lm = landmarks[self.left_pupil_idx]
         right_pupil_lm = landmarks[self.right_pupil_idx]
@@ -243,51 +267,105 @@ class HeadEyeDetector:
         if pupil_x_pixel_dist > epsilon:
             normalized_pupil_y_diff = pupil_y_pixel_diff / pupil_x_pixel_dist
         else: # Unlikely case, but handle it (e.g. if pupils are vertically aligned)
-            normalized_pupil_y_diff = pupil_y_pixel_diff / epsilon # Make it a large number if Y diff is non-zero
+            normalized_pupil_y_diff = pupil_y_pixel_diff / epsilon
 
-        action_detected_this_frame = False # Initialize
+        action_type_this_frame = self.CLICK_TYPE_NONE
+        
+        # Increment frames_since_last_action if it's not already maxed out to prevent overflow
+        # This state is now managed by self.last_action_finish_time_ns
+        # self.frames_since_last_action +=1 
 
-        # Only proceed with action detection if pose is "center"
         if pose_label != "center":
             self.pupil_action_hold_counter = 0
-            self.action_pending_reset = False
-            # Return immediately, indicating no action detected for non-center poses
-            # and the current (but now irrelevant for action) normalized_pupil_y_diff
-            return False, normalized_pupil_y_diff
+            self.action_pending_reset = False 
+            # If pose is not center, any pending first blink for a double click should be timed out / canceled.
+            if self.first_blink_of_potential_double_click_time > 0:
+                 # This pending blink is effectively cancelled, not treated as single.
+                 self.first_blink_of_potential_double_click_time = 0
+            return self.CLICK_TYPE_NONE, normalized_pupil_y_diff
 
-        # Get the threshold specific to the current pose (which must be "center" at this point)
         current_threshold = self.norm_pupil_y_diff_thresholds["center"]
+        
+        # Convert ms thresholds to ns for direct comparison
+        double_click_window_ns = int(self.double_click_window_ms * 1_000_000)
+        min_time_after_action_ns = int(self.min_time_after_action_ms * 1_000_000)
 
-        # Action detection logic:
-        # If the normalized_pupil_y_diff exceeds the current_threshold for the current pose:
-        # 1. If an action is not already 'pending_reset' (i.e., we are not in the cooldown phase of a previous action):
-        #    a. Increment the hold_counter.
-        #    b. If hold_counter reaches pupil_action_consec_frames:
-        #       i. An action is registered (total_actions incremented, action_detected_this_frame = True).
-        #      ii. Set action_pending_reset = True (enter cooldown; wait for condition to cease).
-        #     iii. Reset hold_counter.
-        # 2. If an action IS 'pending_reset', keep hold_counter at 0 (don't re-trigger while waiting for reset).
-        # If the normalized_pupil_y_diff is below threshold:
-        # 1. Reset hold_counter.
-        # 2. Set action_pending_reset = False (ready for a new action sequence).
+
+        # Check if enough time has passed since the last action completed
+        can_initiate_new_action = (current_time_ns - self.last_blink_time) > min_time_after_action_ns
+
+        # Timeout check for a pending first blink (to confirm it as a single click)
+        # This must happen BEFORE processing a new blink, in case the new blink is what causes the timeout.
+        if self.first_blink_of_potential_double_click_time > 0 and \
+           (current_time_ns - self.first_blink_of_potential_double_click_time > double_click_window_ns):
+            # First blink timed out, register it as a single click
+            # Ensure we don't override a double click that might have just been formed by the current blink
+            if action_type_this_frame == self.CLICK_TYPE_NONE: # Only if no action decided for this frame yet
+                action_type_this_frame = self.CLICK_TYPE_SINGLE
+                self.total_actions += 1
+                self.last_blink_time = self.first_blink_of_potential_double_click_time # The time of the actual blink event
+            self.first_blink_of_potential_double_click_time = 0 # Reset regardless
+
+        # Now, process current frame's pupil state
         if normalized_pupil_y_diff > current_threshold:
-            if not self.action_pending_reset:
+            if can_initiate_new_action and not self.action_pending_reset:
                 self.pupil_action_hold_counter += 1
-                if self.pupil_action_hold_counter == self.pupil_action_consec_frames:
-                    self.total_actions += 1
-                    action_detected_this_frame = True
-                    self.action_pending_reset = True # Action triggered, now wait for condition to cease
-                    self.pupil_action_hold_counter = 0 # Reset counter
-            else:
-                # Condition still met, but an action was already triggered and is pending reset.
-                # Keep counter at 0 to prevent re-counting while in this state.
-                self.pupil_action_hold_counter = 0
-        else:
-            # Normalized PupilYDiff is below threshold, so reset everything for the next action cycle
-            self.pupil_action_hold_counter = 0 
-            self.action_pending_reset = False # Condition ceased, ready for a new action sequence
+                if self.pupil_action_hold_counter >= self.pupil_action_consec_frames:
+                    # Valid "physical" blink detected (held for enough frames)
+                    self.pupil_action_hold_counter = 0 # Reset for next detection cycle
+                    self.action_pending_reset = True # A physical blink completed, wait for y_diff to go below threshold
+                                                     # before another physical blink can start accumulating.
+
+                    # This physical blink is a candidate for click logic
+                    current_physical_blink_time = current_time_ns 
+
+                    if self.first_blink_of_potential_double_click_time > 0:
+                        # A first blink was pending. Is this current one the second for a double?
+                        time_diff_ns = current_physical_blink_time - self.first_blink_of_potential_double_click_time
+                        
+                        if time_diff_ns <= double_click_window_ns:
+                            # Yes, it's a double click!
+                            if action_type_this_frame == self.CLICK_TYPE_SINGLE:
+                                # This implies the timeout logic above just fired for the first blink.
+                                # This is a rare edge case: timeout just made it single, but a new blink arrived
+                                # almost simultaneously making it double. Double overrides.
+                                self.total_actions -= 1 # Correct the single click count from timeout
+                                
+                            action_type_this_frame = self.CLICK_TYPE_DOUBLE
+                            self.total_actions += 1 
+                            self.last_blink_time = current_physical_blink_time # Time of the second blink finishing the double
+                            self.first_blink_of_potential_double_click_time = 0 # Reset double click tracking
+                        else:
+                            # No, current physical blink is too late for a double with the previous one.
+                            # The previous first_blink_of_potential_double_click_time has *already* been processed by timeout logic
+                            # (or will be in the next frame if it just timed out this exact frame before this check).
+                            # So, this current physical blink starts a NEW potential double click.
+                            # If the timeout for the previous one hasn't resulted in action_type_this_frame yet,
+                            # it will on the next frame, or earlier in this frame if current_time_ns was just past its window.
+                            # No click action for *this* frame from *this* physical blink yet.
+                            self.first_blink_of_potential_double_click_time = current_physical_blink_time
+                    else:
+                        # No first blink pending, so this current physical blink is the first of a new potential double.
+                        # Or, it could be a single click if no second one follows.
+                        # Don't signal action yet. Set it as pending.
+                        self.first_blink_of_potential_double_click_time = current_physical_blink_time
+                        # Ensure last_blink_time is not updated here, only on confirmed actions.
+            # else: (if not can_initiate_new_action or self.action_pending_reset is true)
+                # In cooldown from a previous action, or y_diff still high from current blink.
+                # pupil_action_hold_counter remains 0 or isn't incremented further.
+                pass
+
+        else: # normalized_pupil_y_diff <= current_threshold (physical blink ended or not started)
+            self.pupil_action_hold_counter = 0 # Reset physical blink hold counter
+            self.action_pending_reset = False  # Ready for a new physical blink to start accumulating
+            # If a first_blink was pending and now y_diff is low, the timeout logic will handle it.
+            # No direct action here.
+
+        # If a timeout occurred earlier and set action_type_this_frame, it will be returned.
+        # If a double click occurred, it will be returned.
+        # Otherwise, CLICK_TYPE_NONE is returned.
             
-        return action_detected_this_frame, normalized_pupil_y_diff
+        return action_type_this_frame, normalized_pupil_y_diff
 
     def process_frame_and_detect_features(self, frame):
         """
@@ -306,11 +384,12 @@ class HeadEyeDetector:
 
             pose_label = self._calculate_head_pose(landmarks_list, frame.shape)
             
-            action_detected, norm_pupil_y_diff = self._calculate_pupil_y_diff_action(landmarks_list, frame.shape, pose_label)
+            # Changed from action_detected to action_type
+            action_type, norm_pupil_y_diff = self._calculate_pupil_y_diff_action(landmarks_list, frame.shape, pose_label)
             
             return {
                 "pose": pose_label,
-                "action_detected": action_detected,
+                "action_type": action_type, # Changed key name
                 "norm_pupil_y_diff": norm_pupil_y_diff,
                 "landmarks_mp_object": self.face_landmarks_for_drawing,
                 "raw_pitch": self.last_pitch,
@@ -326,7 +405,7 @@ class HeadEyeDetector:
             self.pupil_action_hold_counter = 0 # Reset counter if no face
             return {
                 "pose": "center",
-                "action_detected": False,
+                "action_type": self.CLICK_TYPE_NONE, # Changed key name and value
                 "norm_pupil_y_diff": 0.0,
                 "landmarks_mp_object": None,
                 "raw_pitch": 0.0,

@@ -44,15 +44,15 @@ class CursorController:
         # Initial mouse position to center
         pyautogui.moveTo(self.current_x, self.current_y)
 
-    def update_cursor(self, yaw, pitch, pose_label, action_detected):
+    def update_cursor(self, yaw, pitch, pose_label, action_type):
         """
-        Updates the cursor position based on yaw and pitch, and performs a click if action_detected.
+        Updates the cursor position based on yaw and pitch, and performs a click if action_type indicates so.
 
         Args:
             yaw (float): Smoothed yaw angle from the HeadEyeDetector.
             pitch (float): Smoothed pitch angle from the HeadEyeDetector.
             pose_label (str): The current detected pose (e.g., "center", "left", etc.).
-            action_detected (bool): True if the eye action (e.g., pupil-based) was detected.
+            action_type (str): Type of click action (e.g., "NO_ACTION", "SINGLE_CLICK", "DOUBLE_CLICK").
         """
         
         dx = 0
@@ -85,11 +85,17 @@ class CursorController:
 
         pyautogui.moveTo(int(self.current_x), int(self.current_y), duration=0) # Move instantly
 
-        if action_detected:
-            print(f"Controller: Action detected! Performing click at ({int(self.current_x)}, {int(self.current_y)})")
+        # Access click type constants from the detector instance if possible, or define them here.
+        # For now, using string literals as passed by the modified detector.
+        if action_type == "SINGLE_CLICK": # Check for single click
+            print(f"Controller: SINGLE_CLICK detected! Performing click at ({int(self.current_x)}, {int(self.current_y)})")
             pyautogui.click()
-            # Detector should handle action reset logic to prevent multiple clicks for a single held action.
-            time.sleep(0.1) # Small delay to prevent immediate re-click if action is still held by detector logic
+            # The detector's min_frames_after_action should handle cooldown.
+            # time.sleep(0.1) # Original delay, consider if still needed with detector\'s own cooldown
+        elif action_type == "DOUBLE_CLICK": # Check for double click
+            print(f"Controller: DOUBLE_CLICK detected! Performing double click at ({int(self.current_x)}, {int(self.current_y)})")
+            pyautogui.doubleClick()
+            # time.sleep(0.1) # Original delay
 
     @staticmethod
     def get_screen_resolution():
@@ -217,15 +223,18 @@ class HeadEyeController(QtCore.QObject):
             current_yaw = detection_results["raw_yaw"] - self.calibrated_center_yaw
             current_pitch = detection_results["raw_pitch"] - self.calibrated_center_pitch
             
-            print(f"CONTROLLER DEBUG: Pose={detection_results['pose']}, Action={detection_results['action_detected']}, NormPupilYDiff={detection_results['norm_pupil_y_diff']:.3f}")
+            # Use the new action_type key from detection_results
+            action_type_from_detector = detection_results.get("action_type", self.detector.CLICK_TYPE_NONE) 
+            
+            print(f"CONTROLLER DEBUG: Pose={detection_results['pose']}, ActionType={action_type_from_detector}, NormPupilYDiff={detection_results['norm_pupil_y_diff']:.3f}")
 
             self.cursor_controller.update_cursor(
                 current_yaw,
                 current_pitch,
                 detection_results["pose"],
-                detection_results["action_detected"]
+                action_type_from_detector # Pass the action_type
             )
-            if detection_results["action_detected"]:
+            if action_type_from_detector != self.detector.CLICK_TYPE_NONE: # Emit signal if any click occurred
                 self.blink_detected.emit()
 
         # Prepare frame for GUI (convert BGR to RGB and flip for mirror view)
