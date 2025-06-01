@@ -261,7 +261,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.h_sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._style_slider(self.h_sens_slider)
         self.h_sens_slider.setRange(1, 100)
-        self.h_sens_slider.setValue(10)
+        self.h_sens_slider.setValue(9)
         self.h_sens_slider.valueChanged.connect(self._update_sensitivities)
         sens_layout.addWidget(self.h_sens_slider, 0, 1)
 
@@ -269,7 +269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.v_sens_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._style_slider(self.v_sens_slider)
         self.v_sens_slider.setRange(1, 100)
-        self.v_sens_slider.setValue(12)
+        self.v_sens_slider.setValue(9)
         self.v_sens_slider.valueChanged.connect(self._update_sensitivities)
         sens_layout.addWidget(self.v_sens_slider, 1, 1)
 

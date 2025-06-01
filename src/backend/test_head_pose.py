@@ -66,11 +66,25 @@ frame_count = 0
 prev_pose_label = "center"
 pose_oscillations_left_right = 0
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Error: Failed to capture frame from webcam.")
-        break
+# Get frame dimensions for text placement (assuming constant size)
+# We get it once before the loop if webcam resolution is fixed,
+# or inside if it can change (though less common for this script type)
+# For simplicity, let's assume it's fixed after the first frame.
+# However, to be robust, it's better to get it each time or ensure it's set.
+
+# Let's get it at the start of the loop to be safe
+# img_h, img_w, _ = frame.shape # This was commented out, likely the source of error
+
+while cap.isOpened():
+    success, frame = cap.read()
+    if not success:
+        print("Ignoring empty camera frame.")
+        continue
+
+    # Get frame dimensions INSIDE the loop for robustness
+    img_h, img_w, _ = frame.shape
+
+    current_time_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
 
     # Flip the frame for a mirror view (so it feels natural, like looking in a mirror)
     frame = cv2.flip(frame, 1)
@@ -132,7 +146,6 @@ while True:
         )
 
         # Draw head pose direction indicator from the nose tip
-        img_h, img_w, _ = frame.shape
         # Nose tip landmark is index 1 in Mediapipe Face Mesh
         nose_landmark = landmarks_mp_object.landmark[1]
         nose_x = int(nose_landmark.x * img_w)

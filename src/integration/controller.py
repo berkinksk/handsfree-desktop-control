@@ -217,6 +217,8 @@ class HeadEyeController(QtCore.QObject):
             current_yaw = detection_results["raw_yaw"] - self.calibrated_center_yaw
             current_pitch = detection_results["raw_pitch"] - self.calibrated_center_pitch
             
+            print(f"CONTROLLER DEBUG: Pose={detection_results['pose']}, Action={detection_results['action_detected']}, NormPupilYDiff={detection_results['norm_pupil_y_diff']:.3f}")
+
             self.cursor_controller.update_cursor(
                 current_yaw,
                 current_pitch,

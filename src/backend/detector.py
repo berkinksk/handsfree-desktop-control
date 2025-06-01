@@ -7,7 +7,7 @@ class HeadEyeDetector:
     def __init__(self,
                  min_detection_confidence=0.5,
                  min_tracking_confidence=0.5,
-                 norm_pupil_y_diff_threshold_center=0.060, # For 'center' pose (was 0.070)
+                 norm_pupil_y_diff_threshold_center=0.040, # For 'center' pose (was 0.080)
                  norm_pupil_y_diff_threshold_up=0.020,     # For 'up' pose (was 0.030)
                  norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
                  norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
@@ -72,14 +72,21 @@ class HeadEyeDetector:
         self.last_raw_physical_roll = 0.0
 
         # Thresholds for pose determination (degrees)
-        self.yaw_threshold_strong = float(kwargs.get('yaw_threshold_strong', 3.5))
-        self.yaw_threshold_strong_left = float(kwargs.get('yaw_threshold_strong_left', 3.5))
-        self.pitch_threshold_up = float(kwargs.get('pitch_threshold_up', 1.3))
-        self.pitch_threshold_down = float(kwargs.get('pitch_threshold_down', 1.0))
+        self.yaw_threshold_strong = float(kwargs.get('yaw_threshold_strong', 5.0))
+        self.yaw_threshold_strong_left = float(kwargs.get('yaw_threshold_strong_left', 5.0))
+        self.pitch_threshold_up = float(kwargs.get('pitch_threshold_up', 1.7))
+        self.pitch_threshold_down = float(kwargs.get('pitch_threshold_down', 0.7)) # User changed from 0.9
 
-        self.center_threshold_yaw = float(kwargs.get('center_threshold_yaw', 3.5))
-        self.center_threshold_pitch = float(kwargs.get('center_threshold_pitch', 1.3))
+        # New: Tolerances for 2D pose zones
+        self.pitch_tolerance_for_lr_pose = float(kwargs.get('pitch_tolerance_for_lr_pose', 2.0))
+        self.yaw_tolerance_for_ud_pose = float(kwargs.get('yaw_tolerance_for_ud_pose', 2.0))
+
         self.roll_threshold_center = float(kwargs.get('roll_threshold_center', 5.0))
+
+        # Hysteresis parameters (from previous implementation, ensure they are present)
+        self.committed_pose_label = "center" # For hysteresis
+        self.hysteresis_yaw_neutral_threshold = float(kwargs.get('hysteresis_yaw_neutral_threshold', 1.5)) # Needs to pass this towards center to change from L/R
+        self.hysteresis_pitch_neutral_threshold = float(kwargs.get('hysteresis_pitch_neutral_threshold', 0.5)) # Needs to pass this towards center to change from U/D
 
     def _calculate_head_pose(self, landmarks, frame_shape):
         """
@@ -154,25 +161,62 @@ class HeadEyeDetector:
         # However, its stability can affect the overall PnP solution and perceived smoothness.
         # Monitor its behavior (e.g., self.last_raw_physical_roll, self.last_roll) during testing,
         # especially if pitch/yaw seem unstable or if head tilt significantly impacts controls.
-        pose_label = "center" 
+        # pose_label = "center" # Old simple default
 
-        # Thresholds for classifying pose based on smoothed yaw and pitch angles (in degrees).
-        # These values were found to be satisfactory during Step 3.1 tuning.
-        is_centered_yaw = abs(yaw_for_logic) < self.center_threshold_yaw
-        is_centered_pitch = abs(pitch_for_logic) < self.center_threshold_pitch
+        # Determine the 'raw' pose for this frame based on current thresholds and new 2D zone logic
+        calculated_pose_label = "center" # Default for this frame's calculation
 
-        if is_centered_yaw and is_centered_pitch:
-            pose_label = "center"
-        elif yaw_for_logic > self.yaw_threshold_strong:
-            pose_label = "right"
-        elif yaw_for_logic <= -self.yaw_threshold_strong_left:
-            pose_label = "left"
-        elif pitch_for_logic > self.pitch_threshold_up:
-            pose_label = "up"
-        elif pitch_for_logic < -self.pitch_threshold_down:
-            pose_label = "down"
+        # Check for Left/Right pose first, as yaw often has larger magnitude changes
+        if yaw_for_logic <= -self.yaw_threshold_strong_left and abs(pitch_for_logic) < self.pitch_tolerance_for_lr_pose:
+            calculated_pose_label = "left"
+        elif yaw_for_logic > self.yaw_threshold_strong and abs(pitch_for_logic) < self.pitch_tolerance_for_lr_pose:
+            calculated_pose_label = "right"
+        # Then check for Up/Down pose if not already Left/Right
+        elif pitch_for_logic > self.pitch_threshold_up and abs(yaw_for_logic) < self.yaw_tolerance_for_ud_pose:
+            calculated_pose_label = "up"
+        elif pitch_for_logic < -self.pitch_threshold_down and abs(yaw_for_logic) < self.yaw_tolerance_for_ud_pose:
+            calculated_pose_label = "down"
+        # If none of the above, it remains "center"
+
+        # Apply Hysteresis (copied and adapted from previous version, ensure it's correctly integrated)
+        # If previously committed to "left"
+        if self.committed_pose_label == "left":
+            # If yaw is still significantly left (more negative than neutral OR within the 'left' zone criteria)
+            if yaw_for_logic <= -self.hysteresis_yaw_neutral_threshold or \
+               (yaw_for_logic <= -self.yaw_threshold_strong_left and abs(pitch_for_logic) < self.pitch_tolerance_for_lr_pose):
+                self.committed_pose_label = "left"
+            else:
+                self.committed_pose_label = calculated_pose_label # Re-evaluate based on current full logic
+
+        # If previously committed to "right"
+        elif self.committed_pose_label == "right":
+            if yaw_for_logic >= self.hysteresis_yaw_neutral_threshold or \
+               (yaw_for_logic > self.yaw_threshold_strong and abs(pitch_for_logic) < self.pitch_tolerance_for_lr_pose):
+                self.committed_pose_label = "right"
+            else:
+                self.committed_pose_label = calculated_pose_label
+
+        # If previously committed to "up"
+        elif self.committed_pose_label == "up":
+            if pitch_for_logic >= self.hysteresis_pitch_neutral_threshold or \
+               (pitch_for_logic > self.pitch_threshold_up and abs(yaw_for_logic) < self.yaw_tolerance_for_ud_pose):
+                self.committed_pose_label = "up"
+            else:
+                self.committed_pose_label = calculated_pose_label
+
+        # If previously committed to "down"
+        elif self.committed_pose_label == "down":
+            if pitch_for_logic <= -self.hysteresis_pitch_neutral_threshold or \
+               (pitch_for_logic < -self.pitch_threshold_down and abs(yaw_for_logic) < self.yaw_tolerance_for_ud_pose):
+                self.committed_pose_label = "down"
+            else:
+                self.committed_pose_label = calculated_pose_label
         
-        return pose_label
+        # If previously committed to "center" or any other case (e.g. after reset from L/R/U/D)
+        else: # This includes self.committed_pose_label == "center"
+            self.committed_pose_label = calculated_pose_label # Simply adopt the newly calculated label
+        
+        return self.committed_pose_label # Return the possibly-hysterisis-modified pose
 
     def _calculate_pupil_y_diff_action(self, landmarks, frame_shape, pose_label):
         """
@@ -201,10 +245,19 @@ class HeadEyeDetector:
         else: # Unlikely case, but handle it (e.g. if pupils are vertically aligned)
             normalized_pupil_y_diff = pupil_y_pixel_diff / epsilon # Make it a large number if Y diff is non-zero
 
-        # Get the threshold specific to the current pose
-        current_threshold = self.norm_pupil_y_diff_thresholds.get(pose_label, self.norm_pupil_y_diff_thresholds["center"]) 
+        action_detected_this_frame = False # Initialize
 
-        action_detected_this_frame = False
+        # Only proceed with action detection if pose is "center"
+        if pose_label != "center":
+            self.pupil_action_hold_counter = 0
+            self.action_pending_reset = False
+            # Return immediately, indicating no action detected for non-center poses
+            # and the current (but now irrelevant for action) normalized_pupil_y_diff
+            return False, normalized_pupil_y_diff
+
+        # Get the threshold specific to the current pose (which must be "center" at this point)
+        current_threshold = self.norm_pupil_y_diff_thresholds["center"]
+
         # Action detection logic:
         # If the normalized_pupil_y_diff exceeds the current_threshold for the current pose:
         # 1. If an action is not already 'pending_reset' (i.e., we are not in the cooldown phase of a previous action):
@@ -252,6 +305,7 @@ class HeadEyeDetector:
             self.face_landmarks_for_drawing = face_landmarks_object
 
             pose_label = self._calculate_head_pose(landmarks_list, frame.shape)
+            
             action_detected, norm_pupil_y_diff = self._calculate_pupil_y_diff_action(landmarks_list, frame.shape, pose_label)
             
             return {
