@@ -13,6 +13,17 @@ from backend.detector import HeadEyeDetector
 
 class CursorController:
     """Controls the mouse cursor based on head pose and eye actions."""
+
+    # Define action type strings recognized by the controller
+    # These should match the strings returned by HeadEyeDetector's process_frame_and_detect_features
+    CLICK_TYPE_NONE = "NO_ACTION"
+    CLICK_TYPE_SINGLE = "SINGLE_CLICK"  # Generic single click (e.g., for non-center poses)
+    CLICK_TYPE_DOUBLE = "DOUBLE_CLICK"  # Generic double click (e.g., for non-center poses)
+    CLICK_TYPE_LEFT_SINGLE = "LEFT_SINGLE_CLICK"
+    CLICK_TYPE_LEFT_DOUBLE = "LEFT_DOUBLE_CLICK"
+    CLICK_TYPE_RIGHT_SINGLE = "RIGHT_SINGLE_CLICK"
+    # CLICK_TYPE_RIGHT_DOUBLE is intentionally omitted as it's not used.
+
     def __init__(self, screen_width, screen_height, 
                  horizontal_sensitivity=20, vertical_sensitivity=20, 
                  smoothing_factor=0.5, dead_zone_x=0.5, dead_zone_y=0.5):
@@ -52,7 +63,7 @@ class CursorController:
             yaw (float): Smoothed yaw angle from the HeadEyeDetector.
             pitch (float): Smoothed pitch angle from the HeadEyeDetector.
             pose_label (str): The current detected pose (e.g., "center", "left", etc.).
-            action_type (str): Type of click action (e.g., "NO_ACTION", "SINGLE_CLICK", "DOUBLE_CLICK").
+            action_type (str): Type of click action (e.g., "NO_ACTION", "SINGLE_CLICK", "LEFT_SINGLE_CLICK", etc.).
         """
         
         dx = 0
@@ -87,15 +98,32 @@ class CursorController:
 
         # Access click type constants from the detector instance if possible, or define them here.
         # For now, using string literals as passed by the modified detector.
-        if action_type == "SINGLE_CLICK": # Check for single click
-            print(f"Controller: SINGLE_CLICK detected! Performing click at ({int(self.current_x)}, {int(self.current_y)})")
+        
+        # Define action type strings (could also be imported from detector if they become more complex)
+        # CLICK_TYPE_SINGLE = "SINGLE_CLICK" 
+        # CLICK_TYPE_LEFT_SINGLE = "LEFT_SINGLE_CLICK"
+        # CLICK_TYPE_LEFT_DOUBLE = "LEFT_DOUBLE_CLICK"
+        # CLICK_TYPE_RIGHT_SINGLE = "RIGHT_SINGLE_CLICK"
+
+        if action_type == self.CLICK_TYPE_LEFT_SINGLE:
+            print(f"Controller: LEFT_SINGLE_CLICK detected! Performing left click at ({int(self.current_x)}, {int(self.current_y)})")
             pyautogui.click()
-            # The detector's min_frames_after_action should handle cooldown.
-            # time.sleep(0.1) # Original delay, consider if still needed with detector\'s own cooldown
-        elif action_type == "DOUBLE_CLICK": # Check for double click
-            print(f"Controller: DOUBLE_CLICK detected! Performing double click at ({int(self.current_x)}, {int(self.current_y)})")
+        elif action_type == self.CLICK_TYPE_LEFT_DOUBLE:
+            print(f"Controller: LEFT_DOUBLE_CLICK detected! Performing left double click at ({int(self.current_x)}, {int(self.current_y)})")
             pyautogui.doubleClick()
-            # time.sleep(0.1) # Original delay
+        elif action_type == self.CLICK_TYPE_RIGHT_SINGLE:
+            print(f"Controller: RIGHT_SINGLE_CLICK detected! Performing right click (context menu) at ({int(self.current_x)}, {int(self.current_y)})")
+            pyautogui.rightClick()
+        elif action_type == self.CLICK_TYPE_SINGLE: # Generic single click (from non-center poses)
+            print(f"Controller: GENERIC SINGLE_CLICK detected! Performing left click at ({int(self.current_x)}, {int(self.current_y)})")
+            pyautogui.click()
+        elif action_type == self.CLICK_TYPE_DOUBLE: # Generic double click (from non-center poses)
+            print(f"Controller: GENERIC DOUBLE_CLICK detected! Performing left double click at ({int(self.current_x)}, {int(self.current_y)})")
+            pyautogui.doubleClick()
+        # elif action_type == "DOUBLE_CLICK": # Check for double click # This was the old generic one
+        #     print(f"Controller: DOUBLE_CLICK detected! Performing double click at ({int(self.current_x)}, {int(self.current_y)})")
+        #     pyautogui.doubleClick()
+        #     # time.sleep(0.1) # Original delay
 
     @staticmethod
     def get_screen_resolution():

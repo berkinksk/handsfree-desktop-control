@@ -8,7 +8,8 @@ class HeadEyeDetector:
     def __init__(self,
                  min_detection_confidence=0.5,
                  min_tracking_confidence=0.5,
-                 norm_pupil_y_diff_threshold_center=0.040, # For 'center' pose (was 0.080)
+                 norm_pupil_y_diff_threshold_center_left_blink=0.040, # For 'center' pose, left blink
+                 norm_pupil_y_diff_threshold_center_right_blink=0.040, # For 'center' pose, right blink
                  norm_pupil_y_diff_threshold_up=0.020,     # For 'up' pose (was 0.030)
                  norm_pupil_y_diff_threshold_down=0.075,   # For 'down' pose
                  norm_pupil_y_diff_threshold_left=0.025,   # For 'left' pose (was 0.035)
@@ -35,13 +36,17 @@ class HeadEyeDetector:
         # - Higher values make action detection less sensitive.
         # - Lower values make action detection more sensitive.
         # Consider that head tilt (roll) might also affect this metric if not perfectly compensated.
-        self.norm_pupil_y_diff_thresholds = {
-            "center": norm_pupil_y_diff_threshold_center, # Threshold when head is centered
+        self.norm_pupil_y_diff_thresholds = { # For non-center poses (uses absolute difference)
+            # "center" is now handled by specific left/right blink thresholds below
             "up": norm_pupil_y_diff_threshold_up,         # Threshold when head is tilted up
             "down": norm_pupil_y_diff_threshold_down,     # Threshold when head is tilted down
             "left": norm_pupil_y_diff_threshold_left,     # Threshold when head is turned left
             "right": norm_pupil_y_diff_threshold_right    # Threshold when head is turned right
         }
+        # Specific thresholds for 'center' pose, distinguishing left/right blinks
+        self.norm_pupil_y_diff_threshold_center_left_blink = norm_pupil_y_diff_threshold_center_left_blink
+        self.norm_pupil_y_diff_threshold_center_right_blink = norm_pupil_y_diff_threshold_center_right_blink
+
         # Number of consecutive frames the pupil y-difference must exceed the threshold to trigger a held action.
         # E.g., 23 frames at ~30 FPS is roughly 0.75 seconds.
         # Adjust for desired hold duration before an action is registered.
@@ -49,6 +54,8 @@ class HeadEyeDetector:
         self.pupil_action_hold_counter = 0 # Counter for frames norm_pupil_y_diff is above threshold
         self.total_actions = 0     # Total actions detected
         self.action_pending_reset = False # True if action triggered and waiting for condition to cease
+        self.current_blink_type_for_hold = None # Stores "LEFT", "RIGHT", or "BOTH" for current held action
+        self.last_blink_source_for_double_click = None # Stores "LEFT", "RIGHT", or "BOTH" for the first blink of a potential double click
 
         # Store timing parameters from init
         self.double_click_window_ms = double_click_window_ms
@@ -66,8 +73,11 @@ class HeadEyeDetector:
         # self.frames_since_last_action = self.min_frames_after_action + 1 
         
         self.CLICK_TYPE_NONE = "NO_ACTION"
-        self.CLICK_TYPE_SINGLE = "SINGLE_CLICK"
-        self.CLICK_TYPE_DOUBLE = "DOUBLE_CLICK"
+        self.CLICK_TYPE_SINGLE = "SINGLE_CLICK" # Generic single click (e.g., for non-center poses)
+        self.CLICK_TYPE_DOUBLE = "DOUBLE_CLICK" # Generic double click (e.g., for non-center poses)
+        self.CLICK_TYPE_LEFT_SINGLE = "LEFT_SINGLE_CLICK"
+        self.CLICK_TYPE_LEFT_DOUBLE = "LEFT_DOUBLE_CLICK"
+        self.CLICK_TYPE_RIGHT_SINGLE = "RIGHT_SINGLE_CLICK"
         
         # Predefine indices for landmarks used in pose estimation
         self.pose_landmark_indices = [1, 33, 263, 61, 291, 199]
@@ -248,124 +258,144 @@ class HeadEyeDetector:
         Returns a click type (NO_ACTION, SINGLE_CLICK, DOUBLE_CLICK) and the current norm_pupil_y_diff.
         """
         img_h, img_w, _ = frame_shape
-        # Using time.monotonic_ns() for more precise time comparisons directly
-        current_time_ns = time.monotonic_ns()
-
+        
         left_pupil_lm = landmarks[self.left_pupil_idx]
         right_pupil_lm = landmarks[self.right_pupil_idx]
 
         left_pupil_y = left_pupil_lm.y * img_h
         right_pupil_y = right_pupil_lm.y * img_h
+        
         left_pupil_x = left_pupil_lm.x * img_w
         right_pupil_x = right_pupil_lm.x * img_w
+
+        pupil_x_dist = abs(left_pupil_x - right_pupil_x)
         
-        pupil_y_pixel_diff = abs(left_pupil_y - right_pupil_y)
-        pupil_x_pixel_dist = abs(left_pupil_x - right_pupil_x)
-
-        epsilon = 1e-6 # To prevent division by zero
-        normalized_pupil_y_diff = 0.0
-        if pupil_x_pixel_dist > epsilon:
-            normalized_pupil_y_diff = pupil_y_pixel_diff / pupil_x_pixel_dist
-        else: # Unlikely case, but handle it (e.g. if pupils are vertically aligned)
-            normalized_pupil_y_diff = pupil_y_pixel_diff / epsilon
-
-        action_type_this_frame = self.CLICK_TYPE_NONE
+        current_norm_pupil_y_diff = 0.0
+        if pupil_x_dist > 1e-6: 
+            current_norm_pupil_y_diff = (left_pupil_y - right_pupil_y) / pupil_x_dist
         
-        # Increment frames_since_last_action if it's not already maxed out to prevent overflow
-        # This state is now managed by self.last_action_finish_time_ns
-        # self.frames_since_last_action +=1 
+        action_condition_met = False
+        blink_type_this_frame = None # "LEFT" (phys_right), "RIGHT" (phys_left), "BOTH" (non-center)
 
-        if pose_label != "center":
-            self.pupil_action_hold_counter = 0
-            self.action_pending_reset = False 
-            # If pose is not center, any pending first blink for a double click should be timed out / canceled.
-            if self.first_blink_of_potential_double_click_time > 0:
-                 # This pending blink is effectively cancelled, not treated as single.
-                 self.first_blink_of_potential_double_click_time = 0
-            return self.CLICK_TYPE_NONE, normalized_pupil_y_diff
+        # Determine which system-detected blink type occurred based on y-diff and pose
+        if pose_label == "center":
+            if current_norm_pupil_y_diff > self.norm_pupil_y_diff_threshold_center_left_blink: # System "LEFT" blink
+                action_condition_met = True
+                blink_type_this_frame = "LEFT" 
+            elif current_norm_pupil_y_diff < -self.norm_pupil_y_diff_threshold_center_right_blink: # System "RIGHT" blink
+                action_condition_met = True
+                blink_type_this_frame = "RIGHT"
+        else: # Non-center poses
+            current_pose_threshold = self.norm_pupil_y_diff_thresholds.get(pose_label, 0.040) 
+            if abs(current_norm_pupil_y_diff) > current_pose_threshold:
+                action_condition_met = True
+                blink_type_this_frame = "BOTH" 
 
-        current_threshold = self.norm_pupil_y_diff_thresholds["center"]
-        
-        # Convert ms thresholds to ns for direct comparison
-        double_click_window_ns = int(self.double_click_window_ms * 1_000_000)
-        min_time_after_action_ns = int(self.min_time_after_action_ms * 1_000_000)
+        action_type_to_return = self.CLICK_TYPE_NONE
+        current_time_ns = time.time_ns()
 
-
-        # Check if enough time has passed since the last action completed
-        can_initiate_new_action = (current_time_ns - self.last_blink_time) > min_time_after_action_ns
-
-        # Timeout check for a pending first blink (to confirm it as a single click)
-        # This must happen BEFORE processing a new blink, in case the new blink is what causes the timeout.
+        # --- Timeout logic for a previously started potential double click ---
+        # This must be processed BEFORE new blink logic for the current frame,
+        # so a timeout can correctly register a single click if the window just expired.
         if self.first_blink_of_potential_double_click_time > 0 and \
-           (current_time_ns - self.first_blink_of_potential_double_click_time > double_click_window_ns):
-            # First blink timed out, register it as a single click
-            # Ensure we don't override a double click that might have just been formed by the current blink
-            if action_type_this_frame == self.CLICK_TYPE_NONE: # Only if no action decided for this frame yet
-                action_type_this_frame = self.CLICK_TYPE_SINGLE
-                self.total_actions += 1
-                self.last_blink_time = self.first_blink_of_potential_double_click_time # The time of the actual blink event
-            self.first_blink_of_potential_double_click_time = 0 # Reset regardless
-
-        # Now, process current frame's pupil state
-        if normalized_pupil_y_diff > current_threshold:
-            if can_initiate_new_action and not self.action_pending_reset:
-                self.pupil_action_hold_counter += 1
-                if self.pupil_action_hold_counter >= self.pupil_action_consec_frames:
-                    # Valid "physical" blink detected (held for enough frames)
-                    self.pupil_action_hold_counter = 0 # Reset for next detection cycle
-                    self.action_pending_reset = True # A physical blink completed, wait for y_diff to go below threshold
-                                                     # before another physical blink can start accumulating.
-
-                    # This physical blink is a candidate for click logic
-                    current_physical_blink_time = current_time_ns 
-
-                    if self.first_blink_of_potential_double_click_time > 0:
-                        # A first blink was pending. Is this current one the second for a double?
-                        time_diff_ns = current_physical_blink_time - self.first_blink_of_potential_double_click_time
-                        
-                        if time_diff_ns <= double_click_window_ns:
-                            # Yes, it's a double click!
-                            if action_type_this_frame == self.CLICK_TYPE_SINGLE:
-                                # This implies the timeout logic above just fired for the first blink.
-                                # This is a rare edge case: timeout just made it single, but a new blink arrived
-                                # almost simultaneously making it double. Double overrides.
-                                self.total_actions -= 1 # Correct the single click count from timeout
-                                
-                            action_type_this_frame = self.CLICK_TYPE_DOUBLE
-                            self.total_actions += 1 
-                            self.last_blink_time = current_physical_blink_time # Time of the second blink finishing the double
-                            self.first_blink_of_potential_double_click_time = 0 # Reset double click tracking
-                        else:
-                            # No, current physical blink is too late for a double with the previous one.
-                            # The previous first_blink_of_potential_double_click_time has *already* been processed by timeout logic
-                            # (or will be in the next frame if it just timed out this exact frame before this check).
-                            # So, this current physical blink starts a NEW potential double click.
-                            # If the timeout for the previous one hasn't resulted in action_type_this_frame yet,
-                            # it will on the next frame, or earlier in this frame if current_time_ns was just past its window.
-                            # No click action for *this* frame from *this* physical blink yet.
-                            self.first_blink_of_potential_double_click_time = current_physical_blink_time
-                    else:
-                        # No first blink pending, so this current physical blink is the first of a new potential double.
-                        # Or, it could be a single click if no second one follows.
-                        # Don't signal action yet. Set it as pending.
-                        self.first_blink_of_potential_double_click_time = current_physical_blink_time
-                        # Ensure last_blink_time is not updated here, only on confirmed actions.
-            # else: (if not can_initiate_new_action or self.action_pending_reset is true)
-                # In cooldown from a previous action, or y_diff still high from current blink.
-                # pupil_action_hold_counter remains 0 or isn't incremented further.
-                pass
-
-        else: # normalized_pupil_y_diff <= current_threshold (physical blink ended or not started)
-            self.pupil_action_hold_counter = 0 # Reset physical blink hold counter
-            self.action_pending_reset = False  # Ready for a new physical blink to start accumulating
-            # If a first_blink was pending and now y_diff is low, the timeout logic will handle it.
-            # No direct action here.
-
-        # If a timeout occurred earlier and set action_type_this_frame, it will be returned.
-        # If a double click occurred, it will be returned.
-        # Otherwise, CLICK_TYPE_NONE is returned.
+           (current_time_ns - self.first_blink_of_potential_double_click_time) > (self.double_click_window_ms * 1_000_000):
             
-        return action_type_this_frame, normalized_pupil_y_diff
+            timed_out_blink_source = self.last_blink_source_for_double_click # This is "LEFT" for phys. RIGHT, "RIGHT" for phys. LEFT due to mirror
+            pending_action_time = self.first_blink_of_potential_double_click_time 
+
+            # Check if enough time has passed since the *start* of the timed-out action to register it
+            if (current_time_ns - pending_action_time) > (self.min_time_after_action_ms * 1_000_000): 
+                # SWAPPED LOGIC:
+                if pose_label == "center" and timed_out_blink_source == "LEFT": # System's "LEFT" blink timed out (Physical RIGHT eye)
+                    action_type_to_return = self.CLICK_TYPE_LEFT_SINGLE # Phys. RIGHT eye maps to LEFT_SINGLE_CLICK
+                    print(f"Detector: LEFT_SINGLE_CLICK (phys. RIGHT eye, sys LEFT) registered (by timeout).")
+                elif pose_label == "center" and timed_out_blink_source == "RIGHT": # System's "RIGHT" blink timed out (Physical LEFT eye)
+                    action_type_to_return = self.CLICK_TYPE_RIGHT_SINGLE # Phys. LEFT eye maps to RIGHT_SINGLE_CLICK
+                    print(f"Detector: RIGHT_SINGLE_CLICK (phys. LEFT eye, sys RIGHT) registered (by timeout).")
+                elif timed_out_blink_source == "BOTH": # Non-center poses, generic single click
+                    action_type_to_return = self.CLICK_TYPE_SINGLE
+                    print(f"Detector: GENERIC SINGLE_CLICK ({timed_out_blink_source}) registered (by timeout).")
+                
+                if action_type_to_return != self.CLICK_TYPE_NONE:
+                    self.total_actions += 1
+                    self.last_blink_time = pending_action_time # Record the time of this confirmed action
+
+            # Reset the double-click tracking variables as the window has expired
+            self.first_blink_of_potential_double_click_time = 0 
+            self.last_blink_source_for_double_click = None
+
+        # --- Process current frame's physical blink state (hold counter) ---
+        if action_condition_met: # A physical blink is currently detected
+            if self.action_pending_reset: # An action was just committed, ignore blinks during cooldown
+                pass 
+            else: # Update hold counter
+                if self.pupil_action_hold_counter == 0: # Start of a new hold
+                    self.current_blink_type_for_hold = blink_type_this_frame
+                    self.pupil_action_hold_counter = 1
+                elif self.current_blink_type_for_hold == blink_type_this_frame: # Continuing hold of the same blink type
+                    self.pupil_action_hold_counter += 1
+                else: # Blink type changed mid-hold, reset
+                    self.current_blink_type_for_hold = blink_type_this_frame
+                    self.pupil_action_hold_counter = 1
+        else: # No physical blink detected in this frame
+            if self.action_pending_reset: # Cooldown just finished
+                self.action_pending_reset = False
+            self.pupil_action_hold_counter = 0 # Reset hold counter
+            self.current_blink_type_for_hold = None # Clear current hold type
+
+        # --- Determine click type if a physical blink has been held long enough ---
+        if self.pupil_action_hold_counter >= self.pupil_action_consec_frames and not self.action_pending_reset:
+            # Check if enough time has passed since the last *committed* action
+            if (current_time_ns - self.last_blink_time) > (self.min_time_after_action_ms * 1_000_000):
+                confirmed_action_source = self.current_blink_type_for_hold # "LEFT" (phys_right), "RIGHT" (phys_left), or "BOTH"
+                
+                # Check if this is the second blink of a potential double click
+                is_second_blink_of_double = self.first_blink_of_potential_double_click_time > 0 and \
+                                           (current_time_ns - self.first_blink_of_potential_double_click_time) <= (self.double_click_window_ms * 1_000_000) and \
+                                           self.last_blink_source_for_double_click == confirmed_action_source # Must be the same eye/source
+
+                if is_second_blink_of_double:
+                    # This IS the second blink of a potential double click.
+                    # SWAPPED LOGIC:
+                    if pose_label == "center" and confirmed_action_source == "LEFT": # System's "LEFT" double blink (Physical RIGHT eye)
+                        action_type_to_return = self.CLICK_TYPE_LEFT_DOUBLE # Phys. RIGHT eye maps to LEFT_DOUBLE_CLICK
+                        print(f"Detector: LEFT_DOUBLE_CLICK (phys. RIGHT eye, sys LEFT) registered.")
+                    elif pose_label == "center" and confirmed_action_source == "RIGHT": # System's "RIGHT" double blink (Physical LEFT eye)
+                        action_type_to_return = self.CLICK_TYPE_NONE # Phys. LEFT eye double blink is ignored
+                        print(f"Detector: Phys. LEFT eye double blink (sys RIGHT) - NO ACTION.")
+                    elif confirmed_action_source == "BOTH": # Non-center poses, generic double click
+                        action_type_to_return = self.CLICK_TYPE_DOUBLE
+                        print(f"Detector: GENERIC DOUBLE_CLICK ({confirmed_action_source}) registered.")
+                    
+                    if action_type_to_return != self.CLICK_TYPE_NONE:
+                        self.total_actions += 1
+                    
+                    # Reset double-click tracking as it's now resolved (either as double or ignored)
+                    self.first_blink_of_potential_double_click_time = 0 
+                    self.last_blink_source_for_double_click = None
+                else:
+                    # This is the FIRST blink of a potential double click (or a single click if no second blink follows)
+                    self.first_blink_of_potential_double_click_time = current_time_ns
+                    self.last_blink_source_for_double_click = confirmed_action_source
+                    # Print statements for first blink:
+                    if pose_label == "center":
+                        if confirmed_action_source == "LEFT": # Physical RIGHT eye
+                            print(f"Detector: Potential first blink (phys. RIGHT eye, sys LEFT) registered. Waiting for double click window or timeout.")
+                        elif confirmed_action_source == "RIGHT": # Physical LEFT eye
+                            print(f"Detector: Potential first blink (phys. LEFT eye, sys RIGHT) registered. Waiting for double click window or timeout.")
+                        else: # Should not happen if logic is correct for center pose
+                            print(f"Detector: Potential first blink ({confirmed_action_source}, center) registered. Waiting for double click window or timeout.")
+                    else: # Non-center poses
+                        print(f"Detector: Potential first blink ({confirmed_action_source}, non-center) registered. Waiting for double click window or timeout.")
+
+                self.last_blink_time = current_time_ns # Record time of this processed blink (start of cooldown for next action)
+                self.action_pending_reset = True # Set flag to ignore further blinks until hold counter resets
+            else:
+                # Not enough time since last action, so reset current hold without action
+                self.pupil_action_hold_counter = 0 
+                self.current_blink_type_for_hold = None
+        
+        return action_type_to_return, current_norm_pupil_y_diff
 
     def process_frame_and_detect_features(self, frame):
         """

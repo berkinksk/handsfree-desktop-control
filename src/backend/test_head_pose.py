@@ -94,7 +94,7 @@ while cap.isOpened():
 
     pose_label = detection_results["pose"]
     # Internally this is pupil action, but we call it action_now for display
-    action_now = detection_results["action_detected"] 
+    action_type = detection_results["action_type"]
     norm_pupil_y_diff = detection_results["norm_pupil_y_diff"]
     landmarks_mp_object = detection_results["landmarks_mp_object"]
     raw_yaw = detection_results["raw_yaw"]
@@ -109,7 +109,7 @@ while cap.isOpened():
     frame_count += 1
 
     # --- Debugging: Print per-frame info to console ---
-    print(f"Frame: {frame_count:04d} | Pose: {pose_label:<6} | NormPupilYDiff: {norm_pupil_y_diff:.3f} | Action: {action_now} | TotalActions: {total_actions} | RawPhysYaw: {raw_physical_yaw:6.1f} | RawPhysPitch: {raw_physical_pitch:6.1f} | RawPhysRoll: {raw_physical_roll:6.1f} | SmoothYaw: {raw_yaw:6.1f} | SmoothPitch: {raw_pitch:6.1f} | SmoothRoll: {raw_roll:6.1f}")
+    print(f"Frame: {frame_count:04d} | Pose: {pose_label:<6} | NormPupilYDiff: {norm_pupil_y_diff:.3f} | Action: {action_type} | TotalActions: {total_actions} | RawPhysYaw: {raw_physical_yaw:6.1f} | RawPhysPitch: {raw_physical_pitch:6.1f} | RawPhysRoll: {raw_physical_roll:6.1f} | SmoothYaw: {raw_yaw:6.1f} | SmoothPitch: {raw_pitch:6.1f} | SmoothRoll: {raw_roll:6.1f}")
 
     # --- Debugging: Detect rapid Left/Right oscillations ---
     if (prev_pose_label == "left" and pose_label == "right") or \
@@ -120,12 +120,12 @@ while cap.isOpened():
     prev_pose_label = pose_label # Update previous pose for next frame
 
     # Display text says "Blink!" but is triggered by pupil action (action_now)
-    if action_now:
+    if action_type != detector.CLICK_TYPE_NONE:
         action_text_overlay = "Blink!"
-        print("Pupil Action detected (held for 0.75s - displayed as Blink!)!") # Updated print
+        print(f"Action '{action_type}' detected (displayed as Blink!)!") # Updated print
     else:
         if action_text_overlay == "Blink!": 
-             action_text_overlay = "" 
+             action_text_overlay = ""
 
     # Draw facial landmarks for debugging (using MediaPipe's drawing utils for consistency)
     if landmarks_mp_object:
