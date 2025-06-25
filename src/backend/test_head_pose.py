@@ -1,7 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-from detector import HeadEyeDetector
+from .detector import HeadEyeDetector
 # import csv # For logging data
 # import time # For timestamping log entries
 # import datetime # For unique log filenames
