@@ -8,47 +8,46 @@ Hands-Free Desktop Control lets physically disabled users operate a desktop comp
 A webcam tracks **head orientation** to move the cursor, and detects **eyelid blinks** to perform clicks.  
 The system is implemented in Python, using OpenCV for real-time video processing, TensorFlow/Keras CNNs for enhanced gesture recognition (in development), PyAutoGUI for OS-level cursor control, a PyQt5 GUI for the interface, and SQLite for persistent settings.
 
-## Quick Start (Development)
+## How to Use
 
+### For End-Users (Recommended)
+The easiest way to use the application is to download the pre-built executable from the **[Releases](https://github.com/berkinksk/handsfree-desktop-control/releases)** page on GitHub. No installation is required.
+
+### For Developers
+
+**1. Setup the Environment**
 ```bash
-# 1. Clone the repository and create a virtual environment
+# Clone the repository and navigate into it
 git clone https://github.com/berkinksk/handsfree-desktop-control.git
 cd handsfree-desktop-control
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# 2. Install dependencies
-pip install -r requirements.txt
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# 3. Set up model files for the backend (if not already present)
-# Download the LBF face landmark model and Haar cascade:
-# - haarcascade_frontalface_default.xml (usually included with OpenCV)
-# - lbfmodel.yaml (can be obtained from OpenCV's GitHub or release packages)
-# Place these files in src/models/ directory.
-mkdir -p src/models
-# (Copy the downloaded lbfmodel.yaml into src/models/)
-
-# 4. Smoke-test the scaffold
-python src/main.py        # launches the GUI (currently a stub window)
-pytest                    # runs basic import tests
-
-# 5. Test head pose detection (development mode)
-python src/backend/test_head_pose.py   # opens a webcam window to visualize head pose
-
-> **Note:** This project's `feature/backend-cnn` branch may require additional packages (e.g., TensorFlow, opencv-contrib) once CNN models are integrated. For now, the core OpenCV functionality uses `opencv-python`. If you encounter an issue loading the face landmark model, install the contrib package:
-
-```bash
-pip install opencv-contrib-python
+# Install the project in editable mode to handles all dependencies and paths)
+pip install -e .
 ```
 
-This provides the `cv2.face` module required for FacemarkLBF. Ensure that `src/models/lbfmodel.yaml` is available as well.
+**2. Run the Application**
+```bash
+# To launch the GUI application
+python app.py
+```
+
+**3. Build the Executable (Optional)**
+If you want to build the `.exe` file from source, use the following command after setting up the environment. The final executable will be located in the `dist/` directory.
+```bash
+pyinstaller --onefile --windowed --name "HandsfreeDesktopControl" --icon=src/frontend/assets/sun.png --add-data ".venv/Lib/site-packages/mediapipe;mediapipe" --add-data "src/frontend/assets;assets" app.py
+```
 
 ## Repository Layout
 
 - `src/backend/` → HeadEyeDetector (head pose & blink detection logic)
 - `src/integration/` → HeadEyeController (calibration, cursor control loop, DB interaction)
 - `src/frontend/` → PyQt5 GUI (user interface and visual feedback)
-- `src/main.py` → Program entry point (launches GUI and ties components together)
+- `app.py` → Program entry point (launches GUI and ties components together)
+- `setup.py` → Project packaging script (makes the project installable)
 - `db/` → SQLite database schema and default data
 - `tests/` → PyTest tests (smoke tests, unit tests for logic)
 
@@ -63,7 +62,7 @@ Develop on a feature branch and open a Pull Request to merge into `main` after r
 
 1. Pull the latest `main`, create or switch to your feature branch.
 2. Write code; keep commits focused and use Conventional Commit messages (`feat: ...`, `fix: ...`).
-3. Ensure `pytest` passes and the app runs (`python src/main.py` to sanity-check the GUI).
+3. Ensure `pytest` passes and the app runs (`python app.py` to sanity-check the GUI).
 4. Push and open a PR; get at least one teammate to review and approve.
 5. Address any review feedback, then merge.
 6. Sync your branch with `main` periodically to minimize conflicts.
