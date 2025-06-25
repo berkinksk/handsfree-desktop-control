@@ -1,7 +1,3 @@
-"""
-System integrator using PyAutoGUI for cursor control.
-Maps head pose to cursor movement and blinks to clicks.
-"""
 import pyautogui
 import time
 from PyQt5 import QtCore, QtGui # QtGui might be needed for QImage if we pass pixmaps later
@@ -27,18 +23,7 @@ class CursorController:
     def __init__(self, screen_width, screen_height, 
                  horizontal_sensitivity=20, vertical_sensitivity=20, 
                  smoothing_factor=0.5, dead_zone_x=0.5, dead_zone_y=0.5):
-        """
-        Initializes the CursorController.
-
-        Args:
-            screen_width (int): Width of the screen in pixels.
-            screen_height (int): Height of the screen in pixels.
-            horizontal_sensitivity (float): Factor to multiply yaw by for horizontal movement.
-            vertical_sensitivity (float): Factor to multiply pitch by for vertical movement.
-            smoothing_factor (float): Alpha for exponential moving average for cursor movement (0-1). Higher means more smoothing.
-            dead_zone_x (float): Absolute yaw value below which no horizontal movement occurs.
-            dead_zone_y (float): Absolute pitch value below which no vertical movement occurs.
-        """
+        
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.horizontal_sensitivity = horizontal_sensitivity
@@ -56,16 +41,6 @@ class CursorController:
         pyautogui.moveTo(self.current_x, self.current_y)
 
     def update_cursor(self, yaw, pitch, pose_label, action_type):
-        """
-        Updates the cursor position based on yaw and pitch, and performs a click if action_type indicates so.
-
-        Args:
-            yaw (float): Smoothed yaw angle from the HeadEyeDetector.
-            pitch (float): Smoothed pitch angle from the HeadEyeDetector.
-            pose_label (str): The current detected pose (e.g., "center", "left", etc.).
-            action_type (str): Type of click action (e.g., "NO_ACTION", "SINGLE_CLICK", "LEFT_SINGLE_CLICK", etc.).
-        """
-        
         dx = 0
         dy = 0
 
@@ -130,14 +105,7 @@ class CursorController:
         """Gets the primary screen resolution."""
         return pyautogui.size()
 
-# Placeholder for GUI integration, to be fully implemented as per Step 4 of Improvement Plan
-# from PyQt5 import QtCore # Already imported at top
-
 class HeadEyeController(QtCore.QObject):
-    """ 
-    Orchestrates head/eye detection and cursor control.
-    This is the main controller the GUI interacts with.
-    """
     blink_detected = QtCore.pyqtSignal() # Signal for blink/action events
     frame_processed = QtCore.pyqtSignal(np.ndarray) # Signal to send processed frame (RGB) to GUI
     calibration_status = QtCore.pyqtSignal(str) # Signal for calibration status updates
@@ -269,98 +237,3 @@ class HeadEyeController(QtCore.QObject):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         flipped_rgb_frame = cv2.flip(rgb_frame, 1)
         self.frame_processed.emit(flipped_rgb_frame)
-
-# Example Usage (for testing this module directly)
-# This part is usually commented out or removed when integrating
-# if __name__ == '__main__':
-# try:
-# screen_w, screen_h = CursorController.get_screen_resolution()
-# print(f"Screen Resolution: {screen_w}x{screen_h}")
-# 
-# controller = CursorController(
-# screen_w, screen_h, 
-# horizontal_sensitivity=25,
-# vertical_sensitivity=35,
-# smoothing_factor=0.6,
-# dead_zone_x=1.0,
-# dead_zone_y=1.0
-# )
-# 
-# print("Starting dummy cursor control test...")
-# print("Move your head (conceptually) to test. Action triggers click.")
-# print("Press Ctrl+C to exit.")
-# 
-# test_inputs = [
-#             (0, 0, "center", False),
-#             (-2, 0, "left", False),
-#             (-5, 0, "left", False),
-#             (0, 0, "center", False),
-#             (2, 0, "right", False),
-#             (5, 0, "right", True),
-#             (0, 0, "center", False),
-#             (0, -2, "up", False), 
-#             (0, -4, "up", False),
-#             (0, 0, "center", False),
-#             (0, 2, "down", False), 
-#             (0, 4, "down", True),
-#             (0, 0, "center", False),
-#             (-5, -4, "left_up", True),
-#             (0,0, "center", False)
-# ]
-# 
-# for yaw, pitch, pose, action in test_inputs:
-# print(f"Input: Yaw={yaw}, Pitch={pitch}, Pose={pose}, Action={action}")
-# controller.update_cursor(yaw, pitch, pose, action)
-# time.sleep(0.75)
-# 
-# print("Dummy test finished. Returning mouse to center.")
-# controller.update_cursor(0,0,"center", False)
-# 
-# except KeyboardInterrupt:
-# print("\nCursor control test stopped by user.")
-# except Exception as e:
-# print(f"An error occurred: {e}")
-#
-# To test HeadEyeController standalone (without full GUI):
-# if __name__ == '__main__':
-#     from PyQt5.QtWidgets import QApplication
-#     import sys
-# 
-#     app = QApplication(sys.argv) # QApplication instance is needed for QTimer
-#     he_controller = HeadEyeController()
-# 
-#     def on_blink():
-#         print("EVENT: Blink detected by HeadEyeController!")
-# 
-#     def on_frame(cv_frame):
-#         # In a real app, you'd display this in a QLabel
-#         # For testing, just show with OpenCV
-#         cv2.imshow("HeadEyeController Test", cv2.cvtColor(cv_frame, cv2.COLOR_RGB2BGR))
-#         if cv2.waitKey(1) & 0xFF == ord('q'):
-#             he_controller.stop_control()
-#             cv2.destroyAllWindows()
-#             app.quit()
-# 
-#     def on_calib_status(status):
-#         print(f"CALIBRATION: {status}")
-# 
-#     def on_error(errmsg):
-#         print(f"ERROR: {errmsg}")
-#         he_controller.stop_control()
-#         app.quit()
-# 
-#     if not he_controller.detector: # Check if detector failed to init
-#         sys.exit(1)
-# 
-#     he_controller.blink_detected.connect(on_blink)
-#     he_controller.frame_processed.connect(on_frame)
-#     he_controller.calibration_status.connect(on_calib_status)
-#     he_controller.error_occurred.connect(on_error)
-# 
-#     he_controller.start_control()
-# 
-#     # Simple calibration test after 5 seconds
-#     QtCore.QTimer.singleShot(5000, lambda: he_controller.calibrate())
-# 
-#     print("Running HeadEyeController test... Press 'q' in OpenCV window to quit.")
-#     sys.exit(app.exec_()) 

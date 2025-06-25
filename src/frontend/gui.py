@@ -1,12 +1,3 @@
-"""
-Hands-Free Desktop Control – Modern PyQt5 GUI
-=============================================
-• Rounded "card" panels with drop-shadows
-• Animated flat buttons
-• Live webcam preview (fills the video card, no black bars)
-• Animated moon/sun toggle switch for dark ↔ light mode
-"""
-
 import sys
 import math
 import cv2

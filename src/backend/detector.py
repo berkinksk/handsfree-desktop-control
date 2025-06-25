@@ -446,20 +446,3 @@ class HeadEyeDetector:
                 "raw_roll": 0.0,
                 "total_actions": self.total_actions,
             }
-
-# Example usage (for illustration, not part of the class):
-# if __name__ == '__main__':
-#     detector = HeadEyeDetector(blink_threshold=0.25, blink_consec_frames=30) # Example instantiation
-#     cap = cv2.VideoCapture(0)
-#     while cap.isOpened():
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-#         detection_results = detector.process_frame_and_detect_features(frame)
-#         print(f"Pose: {detection_results['pose']}, Blink: {detection_results['blink_detected']}, EAR: {detection_results['ear_avg']:.2f}, Total Blinks: {detection_results['total_blinks']}")
-#         # Further processing like drawing landmarks using detection_results['landmarks_mp_object']
-#         # cv2.imshow('Frame', frame) # Assuming drawing happens on the frame
-#         if cv2.waitKey(5) & 0xFF == 27: # ESC key
-#             break
-#     cap.release()
-#     cv2.destroyAllWindows()

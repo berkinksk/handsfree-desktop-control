@@ -6,29 +6,7 @@ from detector import HeadEyeDetector
 # import time # For timestamping log entries
 # import datetime # For unique log filenames
 
-# # --- CSV Logging Setup ---
-# LOG_DIRECTORY = "."
-# current_time_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-# # Log filename indicates pose-dependent normalized pupil action with 0.75s hold (v4 thresholds)
-# log_filename = f"pose_dep_norm_pupil_action_0_75s_v4_log_{current_time_str}.csv" 
-# log_filepath = f"{LOG_DIRECTORY}/{log_filename}"
 
-# try:
-#     csv_file = open(log_filepath, 'w', newline='')
-#     csv_writer = csv.writer(csv_file)
-#     # Header reflects the actual data being logged
-#     csv_writer.writerow([
-#         "Timestamp", "Frame", 
-#         "RawPhysYaw", "RawPhysPitch", "RawPhysRoll",
-#         "SmoothYaw", "SmoothPitch", "SmoothRoll",
-#         "PoseLabel", "NormPupilYDiff", "PupilActionDetected"
-#     ])
-#     print(f"Logging pose and pose-dependent normalized pupil action (0.75s hold, v4 thresholds) data to: {log_filepath}")
-# except IOError as e:
-#     print(f"Error opening log file {log_filepath}: {e}. Logging will be disabled.")
-#     csv_file = None
-#     csv_writer = None
-# # --- End CSV Logging Setup ---
 
 # Initialize video capture (webcam)
 cap = cv2.VideoCapture(0)
@@ -200,10 +178,5 @@ while cap.isOpened():
 cap.release()
 cv2.destroyAllWindows()
 
-# # --- Close CSV Log File ---
-# if csv_file:
-#     csv_file.close()
-#     print(f"Pose and pose-dependent normalized pupil action data log saved to: {log_filepath}")
-# # --- End Close CSV Log File ---
 
 print(f"Exiting test_head_pose.py. Total L/R oscillations: {pose_oscillations_left_right}")
