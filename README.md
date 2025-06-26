@@ -1,82 +1,133 @@
-# Hands-Free Desktop Control
+# Hands-Free Desktop Control: A Human-Computer Interaction System
 
-**Graduation Project — Eastern Mediterranean University**  
-· Berkin Kaynar · Cıvan Deniz Doğan · Orçun Altınel  
-Supervisor: Assoc. Prof. Dr. Adnan Acan
+**A Graduation Project - Eastern Mediterranean University**
 
-Hands-Free Desktop Control lets physically disabled users operate a desktop computer **without a mouse or keyboard**.  
-A webcam tracks **head orientation** to move the cursor, and detects **eyelid blinks** to perform clicks.  
-The system is implemented in Python, using OpenCV for real-time video processing, TensorFlow/Keras CNNs for enhanced gesture recognition (in development), PyAutoGUI for OS-level cursor control, a PyQt5 GUI for the interface, and SQLite for persistent settings.
+**Authors:**
+- Berkin Kaynar
+- Cıvan Deniz Doğan
+- Orçun Altınel
 
-## How to Use
+**Supervisor:**
+- Assoc. Prof. Dr. Adnan Acan
 
-### For End-Users (Recommended)
-The easiest way to use the application is to download the pre-built executable from the **[Releases](https://github.com/berkinksk/handsfree-desktop-control/releases)** page on GitHub. No installation is required.
+---
 
-### For Developers
+## 1. Abstract
 
-**1. Setup the Environment**
+This project presents a real-time, vision-based human-computer interaction (HCI) system designed to provide hands-free control of a desktop environment. The primary objective is to offer an alternative input modality for users with physical disabilities that limit their use of conventional peripherals like a mouse and keyboard. The system leverages a standard webcam to capture the user's video stream, applying computer vision techniques to track head orientation for cursor navigation and to detect eye blinks for click actuation. The core of the system is built on the MediaPipe framework for robust facial landmark detection, OpenCV for image processing, and PyAutoGUI for OS-level automation. The user interface is implemented using PyQt5, providing essential controls and visual feedback. This document outlines the system's architecture, technical implementation, and usage instructions.
+
+## 2. System Architecture
+
+The application is designed with a modular, three-layer architecture to separate concerns between data input, processing logic, and user presentation.
+
+```mermaid
+graph TD;
+    subgraph "Input Layer"
+        A[Webcam Video Stream]
+    end
+    subgraph "Processing Layer"
+        B["Backend (detector.py)<br/>- MediaPipe Face Mesh<br/>- Head Pose Angle Calculation<br/>- Blink Detection"]
+        C["Integration (controller.py)<br/>- State Management<br/>- Calibration Logic<br/>- Cursor Mapping (PyAutoGUI)"]
+    end
+    subgraph "Presentation Layer"
+        E["Frontend (gui.py)<br/>- PyQt5 Interface<br/>- Live Video Feed<br/>- User Controls"]
+        D[Operating System Cursor]
+    end
+
+    A --> B;
+    B -- "Pose & Blink Data" --> C;
+    C -- "Cursor Coordinates & Clicks" --> D;
+    A -- "Video Frame for Display" --> E;
+    E -- "User Commands" --> C;
+    C -- "Status & Frame Updates" --> E;
+```
+
+-   **Input Layer**: Consists of the webcam, which provides the raw video feed.
+-   **Processing Layer**: This is the core of the system.
+    -   The **Backend** (`detector.py`) processes each frame to identify facial landmarks, calculate the 3D head pose (yaw, pitch, roll), and detect blinks.
+    -   The **Integration** (`controller.py`) layer receives this data, calibrates the user's neutral "center" position, and translates head movements and blinks into corresponding cursor commands via `PyAutoGUI`.
+-   **Presentation Layer**:
+    -   The **Frontend** (`gui.py`) offers a user-friendly interface to start/stop the controls, and view the live video feed.
+    -   The **Operating System Cursor** is the final output, moving and clicking as directed by the processing layer.
+
+## 3. Core Features
+
+-   **Head Pose Tracking**: The system calculates the head's Euler angles (yaw and pitch) in real-time. These angles are mapped to the screen's X and Y coordinates to control the cursor's position. A smoothing filter and a configurable dead zone are applied to enhance stability and prevent jitter.
+-   **Blink Detection**: Eye blinks are used as the primary mechanism for click actions. The system analyzes the vertical distance between pupil landmarks to register single and double clicks. It distinguishes between left-eye and right-eye blinks to trigger different actions (e.g., left-click vs. right-click).
+-   **Calibration**: A calibration function allows the user to set their current head position as the neutral "center" point. All subsequent movements are then measured relative to this calibrated origin, allowing for flexible user posture.
+-   **Graphical User Interface (GUI)**: A clean and modern interface provides controls to start and stop tracking, initiate calibration, and adjust cursor sensitivity. It also displays the live webcam feed for immediate visual feedback.
+
+## 4. Technology Stack
+
+-   **Programming Language**: Python 3.9+
+-   **Computer Vision**: OpenCV, MediaPipe
+-   **GUI Framework**: PyQt5
+-   **OS Automation**: PyAutoGUI
+-   **Packaging & Testing**: Setuptools, PyInstaller, PyTest
+
+## 5. Setup and Installation (For Developers)
+
+Follow these steps to set up a local development environment.
+
+**1. Clone the Repository**
 ```bash
-# Clone the repository and navigate into it
 git clone https://github.com/berkinksk/handsfree-desktop-control.git
 cd handsfree-desktop-control
+```
 
-# Create and activate a virtual environment
+**2. Create a Virtual Environment**
+It is highly recommended to use a virtual environment to manage project dependencies.
+```bash
+# For Windows
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+.venv\Scripts\activate
 
-# Install the project in editable mode to handles all dependencies and paths)
+# For macOS/Linux
+python -m venv .venv
+source .venv/bin/activate
+```
+
+**3. Install Dependencies**
+The project is packaged with `setup.py`. Installing it in editable mode (`-e`) will install all required packages and ensure the `src` directory is in the Python path.
+```bash
 pip install -e .
 ```
 
-**2. Run the Application**
+## 6. Usage
+
+Once the setup is complete, the application can be launched from the root directory:
 ```bash
-# To launch the GUI application
 python app.py
 ```
 
-**3. Build the Executable (Optional)**
-If you want to build the `.exe` file from source, use the following command after setting up the environment. The final executable will be located in the `dist/` directory.
+## 7. Building from Source
+
+To create a standalone executable (`.exe` on Windows), `PyInstaller` is used. Ensure all dependencies are installed, then run the following command from the project root:
+
 ```bash
-pyinstaller --onefile --windowed --name "HandsfreeDesktopControl" --icon=src/frontend/assets/sun.png --add-data ".venv/Lib/site-packages/mediapipe;mediapipe" --add-data "src/frontend/assets;assets" app.py
+pyinstaller --onefile --windowed --name "HandsfreeDesktopControl" ^
+--icon=src/frontend/assets/sun.png ^
+--add-data ".venv/Lib/site-packages/mediapipe;mediapipe" ^
+--add-data "src/frontend/assets;assets" ^
+app.py
 ```
+*Note: The path to `mediapipe` within the virtual environment (`.venv`) may vary slightly based on OS and Python version.*
 
-## Repository Layout
+The final executable will be located in the `dist/` directory.
 
-- `src/backend/` → HeadEyeDetector (head pose & blink detection logic)
-- `src/integration/` → HeadEyeController (calibration, cursor control loop, DB interaction)
-- `src/frontend/` → PyQt5 GUI (user interface and visual feedback)
-- `app.py` → Program entry point (launches GUI and ties components together)
-- `setup.py` → Project packaging script (makes the project installable)
-- `db/` → SQLite database schema and default data
-- `tests/` → PyTest tests (smoke tests, unit tests for logic)
+## 8. Repository Structure
 
-## Branching Model
+The source code is organized as follows:
 
-- **main** – Protected stable branch (demo-ready code).
-- **feature/backend-cnn** – Vision & machine learning development (this is where we implement head pose, blink detection, and later CNN integration).
-- **feature/integration-system** – System integration development (cursor control, calibration, tying backend to frontend).
-- **feature/frontend-gui** – User interface development (building the PyQt5 GUI).
+-   `app.py`: The main entry point for the application.
+-   `setup.py`: The packaging and installation script.
+-   `src/`: Contains the core source code.
+    -   `backend/`: Modules for computer vision tasks (e.g., `detector.py`).
+    -   `frontend/`: The PyQt5 GUI code (`gui.py`) and associated assets.
+    -   `integration/`: The controller logic that connects the backend to the frontend (`controller.py`).
+-   `tests/`: Contains unit and integration tests for the project.
+-   `requirements.txt`: A list of all Python dependencies.
 
-Develop on a feature branch and open a Pull Request to merge into `main` after review:
+## 9. License
 
-1. Pull the latest `main`, create or switch to your feature branch.
-2. Write code; keep commits focused and use Conventional Commit messages (`feat: ...`, `fix: ...`).
-3. Ensure `pytest` passes and the app runs (`python app.py` to sanity-check the GUI).
-4. Push and open a PR; get at least one teammate to review and approve.
-5. Address any review feedback, then merge.
-6. Sync your branch with `main` periodically to minimize conflicts.
-
-## Current Progress and Roadmap
-
-- **Milestone M0** ✅ – Project Scaffold: Basic project structure is set up with stub classes and a simple GUI window. Imports and environment have been tested.
-- **Milestone M1** 🛠️ – OpenCV-based Head Control Prototype: The OpenCV pipeline for head pose is now implemented (face detection + landmark-based pose estimation). The cursor control loop and blink-click mechanism are being developed. A developer can test head movement recognition using the provided script. (Blink detection is still basic and will be improved.)
-- **Milestone M2** ⌛ – CNN Integration: Coming next, we will introduce trained CNN models to improve head pose accuracy and robust blink detection. This will likely involve training models (using TensorFlow/Keras) on a dataset of face images for various poses and eye states. The models will be integrated into `HeadEyeDetector` (or a subclass) to augment or replace the classical approach when ready. Target accuracies: ≥95% for head pose classification, ≥90% for blink detection (as per project requirements).
-- **Milestone M3** ⌛ – Full GUI and Settings: Develop the complete PyQt5 interface, including a calibration wizard (to personalize what is "center" for a user and possibly adjust sensitivity), settings for things like click activation delay, and visual feedback (e.g., showing a pointer or overlay on camera feed). The GUI will also display connection status (camera on/off) and allow the user to start/stop the control.
-- **Milestone M4** ⏳ – Testing and Performance Tuning: Rigorously test the system with real users. Optimize performance (ensure low latency, consider using threads so GUI remains responsive while processing video frames). Fine-tune any thresholds or model parameters based on user feedback. Prepare the final report and demonstration. If time permits, add any nice-to-have features or polish.
-
-See the repository's Issues and Project Board for a breakdown of tasks and progress. Each feature branch corresponds to a set of issues/user stories tracked there.
-
-## License
-
-This project is released under the MIT License. See LICENSE for details.
+This project is distributed under the MIT License. Please see the `LICENSE` file for more details.
